@@ -1,0 +1,12 @@
+{
+  "gemini": {
+    "output_path": "/home/mike/.openclaw/workspace/virtual-staging/backend/uploads/b1393e70a4eea29c9f06245b358e9793_staged_traditional_gemini.jpg",
+    "metadata": {
+      "model": "Google Gemini (Nano Banana)",
+      "style": "traditional",
+      "generation_time": 11.387701988220215,
+      "cost_estimate": "$0.00 (free tier)",
+      "image_size": "native"
+    }
+  }
+}

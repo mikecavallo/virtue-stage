@@ -1,0 +1,12 @@
+{
+  "openai": {
+    "output_path": "../website/public/images/before/living-room_staged_modern_openai.jpg",
+    "metadata": {
+      "model": "OpenAI gpt-image-1",
+      "style": "modern",
+      "generation_time": 22.6563720703125,
+      "cost_estimate": "~$0.02-0.08",
+      "image_size": "1024x1024"
+    }
+  }
+}
