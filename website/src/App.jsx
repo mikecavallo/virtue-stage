@@ -117,7 +117,7 @@ function LandingPage({ onLogin, onSignup }) {
           <div className="step">
             <div className="step-num">2</div>
             <h3>Choose Style</h3>
-            <p>Pick from Modern, Scandinavian, Luxury, Bohemian, and more.</p>
+            <p>Pick from Modern, Coastal, Farmhouse, Scandinavian, Luxury and more.</p>
           </div>
           <div className="step-arrow">→</div>
           <div className="step">
@@ -142,7 +142,7 @@ function LandingPage({ onLogin, onSignup }) {
             <div className="price"><span className="price-amount">$0</span></div>
             <ul className="price-features">
               <li>✓ 3 staging credits</li>
-              <li>✓ All 6 design styles</li>
+              <li>✓ All 8 design styles</li>
               <li>✓ Re-stage a photo in another style</li>
               <li>✓ Multi-angle room projects</li>
             </ul>

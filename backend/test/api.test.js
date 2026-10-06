@@ -93,6 +93,24 @@ test('protected routes require a valid token', async () => {
   assert.equal(me.body.user.password_hash, undefined);
 });
 
+test('styles come from the engine presets, including coastal and farmhouse', async () => {
+  const res = await request(app).get('/api/staging/styles');
+  const ids = res.body.map(s => s.id);
+  for (const id of ['modern', 'traditional', 'minimalist', 'bohemian', 'scandinavian', 'luxury', 'coastal', 'farmhouse']) {
+    assert.ok(ids.includes(id), id);
+  }
+  assert.ok(res.body.every(s => s.label && s.tagline));
+});
+
+test('upload rejects an unknown staging mode', async () => {
+  const { token } = await signup();
+  assert.equal((await upload(token, { mode: 'paint-walls' })).status, 400);
+  const ok = await upload(token, { mode: 'declutter_stage', style: 'coastal' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.mode, 'declutter_stage');
+  await waitForJob(token, ok.body.jobId);
+});
+
 test('upload rejects missing files, bad styles and non-images', async () => {
   const { token } = await signup();
   const noFile = await request(app).post('/api/staging/upload').set('Authorization', `Bearer ${token}`).field('style', 'modern');
@@ -127,7 +145,25 @@ test('upload -> demo staging -> result, thumbnail and download; one credit deduc
 
   const dl = await request(app).get(`/api/staging/download/${res.body.jobId}`).set('Authorization', `Bearer ${token}`);
   assert.equal(dl.status, 200);
-  assert.match(dl.headers['content-disposition'], /virtuestage-scandinavian-bedroom\.jpg/);
+  assert.match(dl.headers['content-disposition'], /virtuestage-scandinavian-bedroom-virtually-staged\.jpg/);
+  assert.equal(dl.headers['x-disclosure-label'], 'on');
+  const raw = await request(app).get(`/api/staging/download/${res.body.jobId}?disclosure=0`).set('Authorization', `Bearer ${token}`);
+  assert.equal(raw.headers['x-disclosure-label'], 'off');
+  assert.match(raw.headers['content-disposition'], /virtuestage-scandinavian-bedroom\.jpg/);
+  // Same size; the labeled copy differs from the raw result only in the bottom-left corner.
+  const [a, b] = await Promise.all([dl.body, raw.body].map(buf => sharp(buf).raw().toBuffer({ resolveWithObject: true })));
+  assert.deepEqual([a.info.width, a.info.height], [b.info.width, b.info.height]);
+  const { width, height, channels } = a.info;
+  let cornerDiff = 0, topRightDiff = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * channels;
+      const d = Math.abs(a.data[i] - b.data[i]);
+      if (x < width * 0.5 && y > height * 0.8) cornerDiff += d;
+      if (x > width * 0.6 && y < height * 0.4) topRightDiff += d;
+    }
+  }
+  assert.ok(cornerDiff > 10 * topRightDiff + 1000, `label not in bottom-left (${cornerDiff} vs ${topRightDiff})`);
 
   const jobs = await request(app).get('/api/staging/jobs').set('Authorization', `Bearer ${token}`);
   assert.equal(jobs.body.jobs.length, 1);
