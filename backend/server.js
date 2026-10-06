@@ -768,18 +768,30 @@ function findDemoSample(roomType) {
 // uploaded photo itself) with a visible DEMO banner. No AI call is made.
 async function renderDemoResult(uploadPath, roomType, outPath) {
   const source = findDemoSample(roomType) || uploadPath;
-  const base = sharp(source).rotate().resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true });
+  // Match the upload's aspect ratio so before/after line up in the compare slider
+  const meta = await sharp(uploadPath).rotate().metadata();
+  const scale = Math.min(1, 1280 / Math.max(meta.width || 1280, meta.height || 960));
+  const width = Math.round((meta.width || 1280) * scale);
+  const height = Math.round((meta.height || 960) * scale);
+  const base = sharp(source).rotate().resize({ width, height, fit: 'cover' });
   const { data, info } = await base.jpeg({ quality: 85 }).toBuffer({ resolveWithObject: true });
-  const bannerH = Math.max(36, Math.round(info.height * 0.07));
-  const fontSize = Math.round(bannerH * 0.45);
+  // Two-line label in the upper right, where the "after" half of the compare
+  // slider shows by default, inset so it survives cover-cropping in the UI.
+  const labelW = Math.round(info.width * 0.36);
+  const fontSize = Math.max(10, Math.round(labelW / 19));
+  const labelH = Math.round(fontSize * 3.3);
   const banner = Buffer.from(
-    `<svg width="${info.width}" height="${bannerH}" xmlns="http://www.w3.org/2000/svg">
-      <rect width="100%" height="100%" fill="#0f172a" fill-opacity="0.78"/>
-      <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif"
-        font-size="${fontSize}" font-weight="700" fill="#f59e0b">DEMO MODE: sample image, not generated from your photo</text>
+    `<svg width="${labelW}" height="${labelH}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100%" height="100%" rx="${Math.round(fontSize * 0.6)}" fill="#0f172a" fill-opacity="0.85"/>
+      <text x="50%" y="38%" dominant-baseline="central" text-anchor="middle" font-family="sans-serif"
+        font-size="${fontSize}" font-weight="700" fill="#f59e0b">DEMO MODE SAMPLE</text>
+      <text x="50%" y="70%" dominant-baseline="central" text-anchor="middle" font-family="sans-serif"
+        font-size="${Math.round(fontSize * 0.72)}" fill="#e2e8f0">not generated from your photo</text>
     </svg>`
   );
-  await sharp(data).composite([{ input: banner, gravity: 'south' }]).jpeg({ quality: 85 }).toFile(outPath);
+  const top = Math.round(info.height * 0.1);
+  const left = Math.round(info.width * 0.58);
+  await sharp(data).composite([{ input: banner, top, left }]).jpeg({ quality: 85 }).toFile(outPath);
 }
 
 async function completeJob(jobId, userId, uploadPath, resultFilename, genTime) {
