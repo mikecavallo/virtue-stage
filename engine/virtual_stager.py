@@ -49,8 +49,8 @@ def build_parser():
     ap = argparse.ArgumentParser(description="VirtueStage virtual staging engine")
     ap.add_argument("image_path", help="room photo to stage")
     ap.add_argument("--style", choices=STYLE_KEYS, default="modern")
-    ap.add_argument("--room-type", default="auto", choices=("auto",) + ROOM_TYPES,
-                    help="room type; 'auto' uses the vision analysis")
+    ap.add_argument("--room-type", default="auto",
+                    help=f"room type ({', '.join(ROOM_TYPES)}); 'auto' or anything else uses the vision analysis")
     ap.add_argument("--mode", choices=MODES, default="stage",
                     help="stage (default), declutter (empty the room only), declutter_stage (empty, then stage)")
     ap.add_argument("--models", nargs="+", choices=["gemini", "openai", "fake"], default=None,
