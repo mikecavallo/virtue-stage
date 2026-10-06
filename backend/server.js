@@ -259,10 +259,12 @@ function wantsDisclosure(query) {
 }
 
 async function addDisclosureLabel(filePath, text = 'Virtually Staged') {
-  const img = sharp(filePath).rotate();
-  const { width, height, format } = await img.metadata();
+  const { format } = await sharp(filePath).metadata();
+  const img = sharp(await sharp(filePath).rotate().png().toBuffer()); // apply EXIF orientation first (lossless)
+  const { width, height } = await img.metadata();
   const short = Math.min(width, height);
-  const fontSize = Math.max(12, Math.round(short * 0.04));
+  // ~4% of the short side, but never wider than the image
+  const fontSize = Math.max(8, Math.min(Math.round(short * 0.04), Math.floor((width * 0.9) / (text.length * 0.6 + 1))));
   const pad = Math.round(fontSize / 2);
   const labelW = Math.round(text.length * fontSize * 0.6) + pad * 2;
   const labelH = Math.round(fontSize * 1.25) + pad * 2;
