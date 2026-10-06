@@ -1,4 +1,4 @@
-# StageAI Pricing Strategy
+# VirtueStage Pricing Strategy (early planning notes)
 
 ## Competitive Landscape Summary
 

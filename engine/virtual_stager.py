@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-Virtual Home Staging Engine
-Tests multiple AI models for converting empty rooms into staged interiors.
+VirtueStage staging engine.
+
+Takes a photo of an empty room and asks an image model to add furniture and
+decor in a chosen style. Providers: Google Gemini (default, used by the
+backend) and OpenAI gpt-image-1 (optional, CLI only).
+
+The backend calls this script as a subprocess and looks for the output file
+`<stem>_staged_<style>_<provider><ext>` next to the input image.
 """
 
 import os
@@ -59,11 +65,6 @@ class StagingModel(ABC):
             Tuple of (output_image_path, metadata)
         """
         pass
-    
-    @abstractmethod
-    def get_cost_estimate(self) -> str:
-        """Return estimated cost per generation."""
-        pass
 
 class OpenAIStagingModel(StagingModel):
     """OpenAI GPT-Image-1 based staging model."""
@@ -110,8 +111,7 @@ class OpenAIStagingModel(StagingModel):
                 'model': 'OpenAI gpt-image-1',
                 'style': style,
                 'generation_time': generation_time,
-                'cost_estimate': '~$0.02-0.08',
-                'image_size': '1024x1024'
+                    'image_size': '1024x1024'
             }
             
             return output_path, metadata
@@ -119,22 +119,21 @@ class OpenAIStagingModel(StagingModel):
         except Exception as e:
             raise Exception(f"OpenAI staging failed: {str(e)}")
     
-    def get_cost_estimate(self) -> str:
-        return "~$0.04 per generation (GPT-4V analysis + DALL-E 3 image)"
 
 class GeminiStagingModel(StagingModel):
     """Google Gemini based staging model."""
 
+    # Short aliases; any full Gemini model id is also accepted.
     MODELS = {
         'gemini-flash': 'gemini-2.5-flash-image',
-        'gemini-pro': 'gemini-2.0-flash-exp-image-generation',
+        'gemini-pro': 'gemini-3-pro-image-preview',
     }
 
     def __init__(self, model_key: str = 'gemini-flash'):
         if not HAS_GENAI:
             raise ImportError("google-genai package required. Install with: pip install google-genai")
         self.model_name = self.MODELS.get(model_key, model_key)
-        self.label = 'Nano Banana' if 'flash' in self.model_name else 'Nano Banana Pro'
+        self.label = self.model_name
         self.client = genai.Client()  # uses GOOGLE_API_KEY env var
 
     def stage_room(self, image_path: str, style: str, prompt: str = None, reference_image: str = None) -> Tuple[str, Dict]:
@@ -190,71 +189,11 @@ class GeminiStagingModel(StagingModel):
             'model': f'Google Gemini ({self.label})',
             'style': style,
             'generation_time': generation_time,
-            'cost_estimate': '$0.00 (free tier)' if 'flash' in self.model_name else '~$0.03',
             'image_size': 'native',
         }
         return output_path, metadata
 
-    def get_cost_estimate(self) -> str:
-        return "~$0.00-0.03 per generation (Gemini)"
 
-
-class FalAIStagingModel(StagingModel):
-    """fal.ai based staging model using Stable Diffusion."""
-    
-    def __init__(self, api_key: str):
-        if not HAS_REQUESTS:
-            raise ImportError("requests package required. Install with: pip install requests")
-        
-        self.api_key = api_key
-        self.base_url = "https://fal.run/fal-ai"
-    
-    def stage_room(self, image_path: str, style: str, prompt: str = None, reference_image: str = None) -> Tuple[str, Dict]:
-        """Stage room using fal.ai Stable Diffusion inpainting."""
-        
-        # This would use fal.ai's inpainting models
-        # For now, return placeholder
-        p = Path(image_path)
-        output_path = str(p.parent / f"{p.stem}_staged_{style}_falai{p.suffix}")
-        
-        metadata = {
-            'model': 'fal.ai SD-XL Inpainting',
-            'style': style,
-            'generation_time': 0,
-            'cost_estimate': '$0.01',
-            'status': 'placeholder - API integration needed'
-        }
-        
-        return output_path, metadata
-    
-    def get_cost_estimate(self) -> str:
-        return "~$0.01 per generation (Stable Diffusion)"
-
-class ReplicateStagingModel(StagingModel):
-    """Replicate based staging model."""
-    
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-    
-    def stage_room(self, image_path: str, style: str, prompt: str = None, reference_image: str = None) -> Tuple[str, Dict]:
-        """Stage room using Replicate models."""
-        
-        # Placeholder - would integrate with Replicate API
-        p = Path(image_path)
-        output_path = str(p.parent / f"{p.stem}_staged_{style}_replicate{p.suffix}")
-        
-        metadata = {
-            'model': 'Replicate Interior Design Model',
-            'style': style,
-            'generation_time': 0,
-            'cost_estimate': '$0.02',
-            'status': 'placeholder - API integration needed'
-        }
-        
-        return output_path, metadata
-    
-    def get_cost_estimate(self) -> str:
-        return "~$0.02 per generation (varies by model)"
 
 class VirtualStager:
     """Main virtual staging engine."""
@@ -275,9 +214,9 @@ class VirtualStager:
                 print(f"Testing {name} model...")
                 output_path, metadata = model.stage_room(image_path, style, prompt=prompt, reference_image=reference_image)
                 results[name] = (output_path, metadata)
-                print(f"✓ {name}: {metadata.get('generation_time', 0):.2f}s")
+                print(f"OK {name}: {metadata.get('generation_time', 0):.2f}s")
             except Exception as e:
-                print(f"✗ {name}: {str(e)}")
+                print(f"FAILED {name}: {str(e)}", file=sys.stderr)
                 results[name] = (None, {'error': str(e)})
         
         return results
@@ -299,7 +238,6 @@ class VirtualStager:
             
             print(f"Model: {metadata.get('model', 'Unknown')}")
             print(f"Generation Time: {metadata.get('generation_time', 0):.2f}s")
-            print(f"Cost Estimate: {metadata.get('cost_estimate', 'Unknown')}")
             print(f"Output: {output_path}")
             
             if 'analysis' in metadata:
@@ -310,15 +248,14 @@ def main():
     parser.add_argument('image_path', help='Path to empty room image')
     parser.add_argument('--style', choices=list(STYLES.keys()), 
                        default='modern', help='Staging style')
-    parser.add_argument('--models', nargs='+', 
-                       choices=['openai', 'gemini', 'falai', 'replicate', 'all'],
-                       default=['all'], help='Models to test')
+    parser.add_argument('--models', nargs='+',
+                       choices=['openai', 'gemini', 'all'],
+                       default=['gemini'], help='Providers to run (default: gemini)')
     parser.add_argument('--prompt', help='Staging prompt (passed from backend; overrides built-in prompts)')
     parser.add_argument('--reference-image', help='Path to a staged reference image for multi-angle consistency')
-    parser.add_argument('--gemini-model', choices=['gemini-flash', 'gemini-pro'], default='gemini-pro', help='Which Gemini model variant to use')
+    parser.add_argument('--gemini-model', default=os.getenv('GEMINI_IMAGE_MODEL', 'gemini-flash'),
+                       help="Gemini model alias (gemini-flash, gemini-pro) or full model id. Env: GEMINI_IMAGE_MODEL")
     parser.add_argument('--openai-key', help='OpenAI API key (or set OPENAI_API_KEY env var)')
-    parser.add_argument('--falai-key', help='fal.ai API key')
-    parser.add_argument('--replicate-key', help='Replicate API key')
     
     args = parser.parse_args()
     
@@ -352,25 +289,8 @@ def main():
         else:
             print("Skipping Gemini: No GOOGLE_API_KEY or GEMINI_API_KEY provided")
     
-    if 'falai' in args.models or 'all' in args.models:
-        falai_key = args.falai_key or os.getenv('FALAI_API_KEY')
-        if falai_key:
-            try:
-                stager.add_model('falai', FalAIStagingModel(falai_key))
-            except ImportError as e:
-                print(f"Skipping fal.ai: {e}")
-        else:
-            print("Skipping fal.ai: No API key provided (placeholder only)")
-    
-    if 'replicate' in args.models or 'all' in args.models:
-        replicate_key = args.replicate_key or os.getenv('REPLICATE_API_TOKEN')
-        if replicate_key:
-            stager.add_model('replicate', ReplicateStagingModel(replicate_key))
-        else:
-            print("Skipping Replicate: No API key provided (placeholder only)")
-    
     if not stager.models:
-        print("Error: No models available. Please provide API keys.")
+        print("Error: No models available. Set GEMINI_API_KEY (or OPENAI_API_KEY with --models openai).", file=sys.stderr)
         sys.exit(1)
     
     print(f"Staging room with style: {args.style}")
@@ -395,6 +315,10 @@ def main():
         json.dump(json_results, f, indent=2)
     
     print(f"\nResults saved to: {results_file}")
+
+    # Non-zero exit if every provider failed, so callers can surface the error.
+    if all(output is None for output, _ in results.values()):
+        sys.exit(2)
 
 if __name__ == '__main__':
     main()
