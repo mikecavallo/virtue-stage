@@ -3,14 +3,16 @@ import React, { createContext, useContext, useState, useEffect } from 'react'
 const API = '/api/auth'
 const AuthContext = createContext(null)
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   return useContext(AuthContext)
 }
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
-  const [loading, setLoading] = useState(true)
   const [token, setTokenState] = useState(() => localStorage.getItem('token'))
+  // Only "loading" while validating a stored token on first load
+  const [loading, setLoading] = useState(() => !!localStorage.getItem('token'))
 
   function setToken(t) {
     if (t) localStorage.setItem('token', t)
@@ -19,7 +21,7 @@ export function AuthProvider({ children }) {
   }
 
   useEffect(() => {
-    if (!token) { setLoading(false); return }
+    if (!token) return
     fetch(`${API}/me`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(d => setUser(d.user))

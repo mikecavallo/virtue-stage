@@ -134,6 +134,11 @@ export default function DashboardPage({ onLanding }) {
   const [error, setError] = useState('')
   const [processingTime, setProcessingTime] = useState(0)
   const [detectedRoomType, setDetectedRoomType] = useState(null)
+  const [stagingMode, setStagingMode] = useState(null)
+
+  useEffect(() => {
+    fetch('/api/health').then(r => r.json()).then(d => setStagingMode(d.stagingMode)).catch(() => {})
+  }, [])
 
   // Project flow state
   const [projects, setProjects] = useState([])
@@ -183,7 +188,7 @@ export default function DashboardPage({ onLanding }) {
           setError(d.error || 'Processing failed')
           setView('dashboard')
         }
-      } catch {}
+      } catch { /* transient network error: keep polling */ }
     }, 2000)
     return () => { clearInterval(poller); clearInterval(timer) }
   }, [currentJob, view, token])
@@ -208,7 +213,7 @@ export default function DashboardPage({ onLanding }) {
           setProjectView(null)
           setView('dashboard')
         }
-      } catch {}
+      } catch { /* transient network error: keep polling */ }
     }, 2000)
     return () => { clearInterval(poller); clearInterval(timer) }
   }, [currentProject, projectView, token])
@@ -230,7 +235,7 @@ export default function DashboardPage({ onLanding }) {
           setCurrentProject(proj)
           setProjectView('project-gallery')
         }
-      } catch {}
+      } catch { /* transient network error: keep polling */ }
     }, 2000)
     return () => { clearInterval(poller); clearInterval(timer) }
   }, [currentProject, projectView, token])
@@ -399,11 +404,6 @@ export default function DashboardPage({ onLanding }) {
     setView('project')
   }
 
-  function tryAnotherStyle() {
-    if (jobResults?.originalUrl) setPreview(jobResults.originalUrl)
-    setView('configure')
-  }
-
   async function downloadImage(jobId) {
     try {
       const r = await fetch(`/api/staging/download/${jobId}`, { headers: { Authorization: `Bearer ${token}` } })
@@ -506,7 +506,7 @@ export default function DashboardPage({ onLanding }) {
           disabled={uploading || (credits !== null && credits <= 0)}
           onClick={onGenerate}
         >
-          {uploading ? 'Uploading...' : credits !== null && credits <= 0 ? 'No Credits — Upgrade to Pro' : generateLabel}
+          {uploading ? 'Uploading...' : credits !== null && credits <= 0 ? 'No credits left' : generateLabel}
         </button>
       </div>
     )
@@ -516,7 +516,7 @@ export default function DashboardPage({ onLanding }) {
     <div className="dashboard-page">
       <nav className="nav">
         <div className="nav-inner">
-          <a href="#" className="nav-logo" onClick={e => { e.preventDefault(); onLanding() }}>
+          <a href="/" className="nav-logo" onClick={e => { e.preventDefault(); onLanding() }}>
             <Logo />
             <span>VirtueStage</span>
           </a>
@@ -535,6 +535,11 @@ export default function DashboardPage({ onLanding }) {
       </nav>
 
       <div className="dashboard-content">
+        {stagingMode === 'demo' && (
+          <div className="demo-banner">
+            <strong>Demo mode.</strong> No AI model is called: results are bundled sample images, not generated from your photo.
+          </div>
+        )}
         {error && (
           <div className="auth-error" style={{ maxWidth: 600, margin: '1rem auto' }}>
             {error}
@@ -550,7 +555,7 @@ export default function DashboardPage({ onLanding }) {
                 <div className="credit-count">{credits ?? '...'}</div>
                 <div className="credit-label">
                   <strong>Staging Credits</strong>
-                  {credits === 0 ? 'Upgrade to Pro for unlimited' : 'Available to use'}
+                  {credits === 0 ? 'Paid plans are coming soon' : 'Available to use'}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '.75rem' }}>
