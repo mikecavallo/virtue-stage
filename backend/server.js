@@ -132,6 +132,28 @@ function authMiddleware(req, res, next) {
   }
 }
 
+// <img> tags cannot send an Authorization header, so image URLs carry a
+// short-lived, image-only token in the query string (?t=...).
+function imageToken(userId) {
+  return jwt.sign({ id: userId, scope: 'img' }, JWT_SECRET, { expiresIn: '1h' });
+}
+
+function imageUrl(kind, userId, filename, token) {
+  return `/api/staging/${kind}/${userId}/${encodeURIComponent(filename)}?t=${token}`;
+}
+
+function imageAuthMiddleware(req, res, next) {
+  if (req.headers.authorization) return authMiddleware(req, res, next);
+  try {
+    const payload = jwt.verify(String(req.query.t || ''), JWT_SECRET);
+    if (payload.scope !== 'img') throw new Error('wrong scope');
+    req.user = { id: payload.id };
+    next();
+  } catch {
+    res.status(401).json({ error: 'Not authenticated' });
+  }
+}
+
 // ─── Rate limiting: max 3 concurrent jobs per user ───
 // Credits not already committed to in-flight jobs (credits are deducted on completion)
 function availableCredits(user) {
@@ -603,7 +625,7 @@ app.get('/api/staging/styles', (req, res) => {
 });
 
 // ─── Serve images ───
-app.get('/api/staging/images/:userId/:filename', authMiddleware, (req, res) => {
+app.get('/api/staging/images/:userId/:filename', imageAuthMiddleware, (req, res) => {
   const { userId, filename } = req.params;
   if (userId !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
   
@@ -616,7 +638,7 @@ app.get('/api/staging/images/:userId/:filename', authMiddleware, (req, res) => {
 });
 
 // ─── Serve thumbnails ───
-app.get('/api/staging/thumbnails/:userId/:filename', authMiddleware, (req, res) => {
+app.get('/api/staging/thumbnails/:userId/:filename', imageAuthMiddleware, (req, res) => {
   const { userId, filename } = req.params;
   if (userId !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
   
@@ -1012,6 +1034,7 @@ app.get('/api/projects/:projectId', authMiddleware, (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
   const userId = req.user.id;
+  const imgTok = imageToken(userId);
   const projectJobs = db.prepare('SELECT * FROM jobs WHERE project_id = ? ORDER BY is_hero DESC, created_at ASC').all(project.id);
 
   const allComplete = projectJobs.every(j => j.status === 'complete' || j.status === 'error');
@@ -1028,9 +1051,9 @@ app.get('/api/projects/:projectId', authMiddleware, (req, res) => {
       style: j.style,
       room_type: j.room_type,
       is_hero: !!j.is_hero,
-      originalUrl: j.original_path ? `/api/staging/images/${userId}/${j.original_path}` : null,
+      originalUrl: j.original_path ? imageUrl('images', userId, j.original_path, imgTok) : null,
       results: j.result_path ? [{
-        url: `/api/staging/images/${userId}/${j.result_path}`,
+        url: imageUrl('images', userId, j.result_path, imgTok),
         model: MODEL_LABEL,
         metadata: { generation_time: j.generation_time }
       }] : [],
@@ -1043,6 +1066,7 @@ app.get('/api/projects/:projectId', authMiddleware, (req, res) => {
 // List user's projects (with jobs for dashboard thumbnails)
 app.get('/api/projects', authMiddleware, (req, res) => {
   const userId = req.user.id;
+  const imgTok = imageToken(userId);
   const projects = db.prepare('SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC').all(userId);
   const result = projects.map(p => {
     const projectJobs = db.prepare('SELECT * FROM jobs WHERE project_id = ? ORDER BY is_hero DESC, created_at ASC').all(p.id);
@@ -1054,10 +1078,10 @@ app.get('/api/projects', authMiddleware, (req, res) => {
         style: j.style,
         room_type: j.room_type,
         is_hero: !!j.is_hero,
-        originalUrl: j.original_path ? `/api/staging/images/${userId}/${j.original_path}` : null,
-        thumbnailUrl: j.result_path ? `/api/staging/thumbnails/${userId}/${j.id}_result_thumb.jpg` : null,
+        originalUrl: j.original_path ? imageUrl('images', userId, j.original_path, imgTok) : null,
+        thumbnailUrl: j.result_path ? imageUrl('thumbnails', userId, `${j.id}_result_thumb.jpg`, imgTok) : null,
         results: j.result_path ? [{
-          url: `/api/staging/images/${userId}/${j.result_path}`,
+          url: imageUrl('images', userId, j.result_path, imgTok),
         }] : [],
       })),
     };
@@ -1077,6 +1101,7 @@ app.get('/api/staging/results/:jobId', authMiddleware, (req, res) => {
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
   const userId = req.user.id;
+  const imgTok = imageToken(userId);
   res.json({
     jobId: job.id,
     status: job.status,
@@ -1084,9 +1109,9 @@ app.get('/api/staging/results/:jobId', authMiddleware, (req, res) => {
     roomType: job.room_type,
     room_type: job.room_type,
     autoDetected: !!job.auto_detected,
-    originalUrl: job.original_path ? `/api/staging/images/${userId}/${job.original_path}` : null,
+    originalUrl: job.original_path ? imageUrl('images', userId, job.original_path, imgTok) : null,
     results: job.result_path ? [{
-      url: `/api/staging/images/${userId}/${job.result_path}`,
+      url: imageUrl('images', userId, job.result_path, imgTok),
       model: MODEL_LABEL,
       metadata: { generation_time: job.generation_time }
     }] : [],
@@ -1098,16 +1123,17 @@ app.get('/api/staging/results/:jobId', authMiddleware, (req, res) => {
 app.get('/api/staging/jobs', authMiddleware, (req, res) => {
   const rows = db.prepare('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC').all(req.user.id);
   const userId = req.user.id;
+  const imgTok = imageToken(userId);
   const jobs = rows.map(job => ({
     jobId: job.id,
     status: job.status,
     style: job.style,
     room_type: job.room_type,
-    originalUrl: job.original_path ? `/api/staging/images/${userId}/${job.original_path}` : null,
-    thumbnailUrl: job.thumbnail_path ? `/api/staging/thumbnails/${userId}/${job.thumbnail_path}` : null,
-    originalThumbnailUrl: job.original_thumbnail_path ? `/api/staging/thumbnails/${userId}/${job.original_thumbnail_path}` : null,
+    originalUrl: job.original_path ? imageUrl('images', userId, job.original_path, imgTok) : null,
+    thumbnailUrl: job.thumbnail_path ? imageUrl('thumbnails', userId, job.thumbnail_path, imgTok) : null,
+    originalThumbnailUrl: job.original_thumbnail_path ? imageUrl('thumbnails', userId, job.original_thumbnail_path, imgTok) : null,
     results: job.result_path ? [{
-      url: `/api/staging/images/${userId}/${job.result_path}`,
+      url: imageUrl('images', userId, job.result_path, imgTok),
       model: MODEL_LABEL,
       metadata: { generation_time: job.generation_time }
     }] : [],

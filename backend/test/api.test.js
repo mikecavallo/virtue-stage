@@ -117,9 +117,13 @@ test('upload -> demo staging -> result, thumbnail and download; one credit deduc
   assert.equal(results.body.roomType, 'bedroom');
   assert.equal(results.body.results[0].model, 'demo-sample');
 
-  const img = await request(app).get(results.body.results[0].url).set('Authorization', `Bearer ${token}`);
+  // Image URLs carry a short-lived token so plain <img> tags can load them
+  const img = await request(app).get(results.body.results[0].url);
   assert.equal(img.status, 200);
   assert.match(img.headers['content-type'], /image\/jpeg/);
+  const bare = results.body.results[0].url.split('?')[0];
+  assert.equal((await request(app).get(bare)).status, 401);
+  assert.equal((await request(app).get(`${bare}?t=${token}`)).status, 401, 'session token is not an image token');
 
   const dl = await request(app).get(`/api/staging/download/${res.body.jobId}`).set('Authorization', `Bearer ${token}`);
   assert.equal(dl.status, 200);
@@ -192,5 +196,8 @@ test('users cannot read each other\'s jobs or images', async () => {
 
   assert.equal((await request(app).get(`/api/staging/results/${res.body.jobId}`).set('Authorization', `Bearer ${other.token}`)).status, 404);
   assert.equal((await request(app).get(`/api/staging/download/${res.body.jobId}`).set('Authorization', `Bearer ${other.token}`)).status, 404);
-  assert.equal((await request(app).get(results.body.results[0].url).set('Authorization', `Bearer ${other.token}`)).status, 403);
+  const bare = results.body.results[0].url.split('?')[0];
+  assert.equal((await request(app).get(bare).set('Authorization', `Bearer ${other.token}`)).status, 403);
+  const otherJobs = await request(app).get('/api/staging/jobs').set('Authorization', `Bearer ${other.token}`);
+  assert.equal(otherJobs.body.jobs.length, 0);
 });

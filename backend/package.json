@@ -8,7 +8,7 @@
     "demo": "STAGING_MODE=demo node --env-file-if-exists=.env server.js",
     "test": "node --test"
   },
-  "license": "MIT",
+  "license": "UNLICENSED",
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.6.2",
