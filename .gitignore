@@ -1,11 +1,41 @@
+# Dependencies
 node_modules/
+
+# Environment / secrets
 .env
-.env.local
-.env.production
-backend/data/virtuestage.db
-backend/data/uploads/
-backend/data/results/
-*.log
-.DS_Store
+.env.*
+!.env.example
+
+# Runtime data (SQLite DB, user uploads, generated results)
+backend/data/
+backend/uploads/
+backend/results/
+backend/public/
+engine/uploads/
+engine/output/
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Engine scratch output
+engine/*_staging_results_*.json
+engine/*.png
+
+# Build output
 dist/
 build/
+
+# Test / tooling output
+coverage/
+test-results/
+playwright-report/
+
+# Logs / OS
+*.log
+.DS_Store
