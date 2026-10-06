@@ -1,6 +1,13 @@
-node_modules
-website/node_modules
+**/node_modules
 website/dist
 backend/data
+backend/public
+backend/uploads
+backend/results
+backend/test
+**/__pycache__
+**/.env
 *.log
 .git
+.github
+docs

@@ -1,14 +1,14 @@
 {
-  "name": "backend",
+  "name": "virtuestage-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "VirtueStage API: auth, credits, uploads and staging jobs",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node --env-file-if-exists=.env server.js",
+    "demo": "STAGING_MODE=demo node --env-file-if-exists=.env server.js",
+    "test": "node --test"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.6.2",
@@ -17,5 +17,12 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "supertest": "^7.3.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.9"
   }
 }

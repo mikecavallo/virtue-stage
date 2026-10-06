@@ -36,7 +36,7 @@ export default function LoginPage({ onSwitch }) {
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
-        <p className="auth-switch">Don't have an account? <a href="#" onClick={e => { e.preventDefault(); onSwitch() }}>Sign up free</a></p>
+        <p className="auth-switch">Don't have an account? <button type="button" className="link-btn" onClick={onSwitch}>Sign up free</button></p>
       </div>
     </div>
   )

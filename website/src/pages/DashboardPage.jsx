@@ -18,6 +18,8 @@ const STYLES = [
   { id: 'scandinavian', label: 'Scandinavian', desc: 'Light & cozy', gradient: 'linear-gradient(135deg, #0ea5e9, #06b6d4)' },
   { id: 'luxury', label: 'Luxury', desc: 'High-end finishes', gradient: 'linear-gradient(135deg, #a855f7, #7c3aed)' },
   { id: 'bohemian', label: 'Bohemian', desc: 'Eclectic & vibrant', gradient: 'linear-gradient(135deg, #f43f5e, #e11d48)' },
+  { id: 'coastal', label: 'Coastal', desc: 'Airy, sand & sea-glass', gradient: 'linear-gradient(135deg, #38bdf8, #e7d8b8)' },
+  { id: 'farmhouse', label: 'Farmhouse', desc: 'Warm wood, black accents', gradient: 'linear-gradient(135deg, #a16207, #1f2937)' },
 ]
 
 const PROCESSING_STEPS = [
@@ -128,12 +130,19 @@ export default function DashboardPage({ onLanding }) {
   const [dragOver, setDragOver] = useState(false)
   const [roomType, setRoomType] = useState('auto')
   const [style, setStyle] = useState('modern')
+  const [declutter, setDeclutter] = useState(false)
+  const [disclosure, setDisclosure] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [currentJob, setCurrentJob] = useState(null)
   const [jobResults, setJobResults] = useState(null)
   const [error, setError] = useState('')
   const [processingTime, setProcessingTime] = useState(0)
   const [detectedRoomType, setDetectedRoomType] = useState(null)
+  const [stagingMode, setStagingMode] = useState(null)
+
+  useEffect(() => {
+    fetch('/api/health').then(r => r.json()).then(d => setStagingMode(d.stagingMode)).catch(() => {})
+  }, [])
 
   // Project flow state
   const [projects, setProjects] = useState([])
@@ -183,7 +192,7 @@ export default function DashboardPage({ onLanding }) {
           setError(d.error || 'Processing failed')
           setView('dashboard')
         }
-      } catch {}
+      } catch { /* transient network error: keep polling */ }
     }, 2000)
     return () => { clearInterval(poller); clearInterval(timer) }
   }, [currentJob, view, token])
@@ -208,7 +217,7 @@ export default function DashboardPage({ onLanding }) {
           setProjectView(null)
           setView('dashboard')
         }
-      } catch {}
+      } catch { /* transient network error: keep polling */ }
     }, 2000)
     return () => { clearInterval(poller); clearInterval(timer) }
   }, [currentProject, projectView, token])
@@ -230,7 +239,7 @@ export default function DashboardPage({ onLanding }) {
           setCurrentProject(proj)
           setProjectView('project-gallery')
         }
-      } catch {}
+      } catch { /* transient network error: keep polling */ }
     }, 2000)
     return () => { clearInterval(poller); clearInterval(timer) }
   }, [currentProject, projectView, token])
@@ -267,6 +276,7 @@ export default function DashboardPage({ onLanding }) {
       const fd = new FormData()
       fd.append('style', style)
       fd.append('room_type', roomType)
+      fd.append('mode', declutter ? 'declutter_stage' : 'stage')
       fd.append('room_0', file)
       const r = await fetch('/api/staging/upload', {
         method: 'POST',
@@ -295,6 +305,7 @@ export default function DashboardPage({ onLanding }) {
       fd.append('hero_image', file)
       fd.append('style', style)
       fd.append('room_type', roomType)
+      fd.append('mode', declutter ? 'declutter_stage' : 'stage')
       fd.append('name', projectName || 'Untitled Project')
       const r = await fetch('/api/projects', {
         method: 'POST',
@@ -394,19 +405,14 @@ export default function DashboardPage({ onLanding }) {
   function startNewProject() {
     setFile(null); setPreview(null); setError(''); setImgDimensions(null); setDetectedRoomType(null)
     setProjectName(''); setCurrentProject(null); setBatchFiles([]); setBatchPreviews([])
-    setRoomType('auto'); setStyle('modern')
+    setRoomType('auto'); setStyle('modern'); setDeclutter(false)
     setProjectView('create-hero')
     setView('project')
   }
 
-  function tryAnotherStyle() {
-    if (jobResults?.originalUrl) setPreview(jobResults.originalUrl)
-    setView('configure')
-  }
-
   async function downloadImage(jobId) {
     try {
-      const r = await fetch(`/api/staging/download/${jobId}`, { headers: { Authorization: `Bearer ${token}` } })
+      const r = await fetch(`/api/staging/download/${jobId}?disclosure=${disclosure ? 1 : 0}`, { headers: { Authorization: `Bearer ${token}` } })
       if (!r.ok) throw new Error('Download failed')
       const blob = await r.blob()
       const url = URL.createObjectURL(blob)
@@ -495,6 +501,11 @@ export default function DashboardPage({ onLanding }) {
           ))}
         </div>
 
+        <label className="config-label" style={{ display: 'flex', gap: '.5rem', alignItems: 'flex-start', cursor: 'pointer', fontWeight: 400 }}>
+          <input type="checkbox" checked={declutter} onChange={e => setDeclutter(e.target.checked)} style={{ marginTop: '.25rem' }} />
+          <span>Room already has furniture or clutter: remove it first, then stage</span>
+        </label>
+
         <div className="config-credit-notice">
           <span>⚡</span>
           <span>This will use <strong>1 credit</strong>. You have <strong>{credits ?? '...'}</strong> remaining.</span>
@@ -506,7 +517,7 @@ export default function DashboardPage({ onLanding }) {
           disabled={uploading || (credits !== null && credits <= 0)}
           onClick={onGenerate}
         >
-          {uploading ? 'Uploading...' : credits !== null && credits <= 0 ? 'No Credits — Upgrade to Pro' : generateLabel}
+          {uploading ? 'Uploading...' : credits !== null && credits <= 0 ? 'No credits left' : generateLabel}
         </button>
       </div>
     )
@@ -516,7 +527,7 @@ export default function DashboardPage({ onLanding }) {
     <div className="dashboard-page">
       <nav className="nav">
         <div className="nav-inner">
-          <a href="#" className="nav-logo" onClick={e => { e.preventDefault(); onLanding() }}>
+          <a href="/" className="nav-logo" onClick={e => { e.preventDefault(); onLanding() }}>
             <Logo />
             <span>VirtueStage</span>
           </a>
@@ -535,6 +546,11 @@ export default function DashboardPage({ onLanding }) {
       </nav>
 
       <div className="dashboard-content">
+        {stagingMode === 'demo' && (
+          <div className="demo-banner">
+            <strong>Demo mode.</strong> No AI model is called: results are bundled sample images, not generated from your photo.
+          </div>
+        )}
         {error && (
           <div className="auth-error" style={{ maxWidth: 600, margin: '1rem auto' }}>
             {error}
@@ -550,7 +566,7 @@ export default function DashboardPage({ onLanding }) {
                 <div className="credit-count">{credits ?? '...'}</div>
                 <div className="credit-label">
                   <strong>Staging Credits</strong>
-                  {credits === 0 ? 'Upgrade to Pro for unlimited' : 'Available to use'}
+                  {credits === 0 ? 'Paid plans are coming soon' : 'Available to use'}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '.75rem' }}>
@@ -748,6 +764,17 @@ export default function DashboardPage({ onLanding }) {
                     )}
                     <div className="results-item-info">
                       {r.metadata?.generation_time && <span>Generated in {Math.round(r.metadata.generation_time)}s</span>}
+                      {jobResults.quality && (
+                        <span title={(jobResults.quality.warnings || []).join('\n')}>
+                          {jobResults.quality.passed
+                            ? `Quality check passed (structure ${jobResults.quality.fidelity?.toFixed(2)}${jobResults.quality.judgeOverall != null ? `, reviewer ${jobResults.quality.judgeOverall.toFixed(1)}/10` : ''})`
+                            : 'Flagged by the quality check: review carefully before using'}
+                        </span>
+                      )}
+                      <label style={{ display: 'inline-flex', gap: '.35rem', alignItems: 'center', fontSize: '.85rem', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={disclosure} onChange={e => setDisclosure(e.target.checked)} />
+                        "Virtually Staged" label
+                      </label>
                       <button className="btn btn--sm btn--primary" onClick={() => downloadImage(jobResults.jobId)}>⬇ Download HD</button>
                     </div>
                   </div>

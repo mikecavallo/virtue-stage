@@ -27,7 +27,7 @@ export default function SignupPage({ onSwitch }) {
           <span>VirtueStage</span>
         </div>
         <h2>Create your account</h2>
-        <p className="auth-sub">Start staging rooms in seconds — 3 free credits included</p>
+        <p className="auth-sub">3 free staging credits included</p>
         {error && <div className="auth-error">{error}</div>}
         <form onSubmit={handleSubmit}>
           <label>Name</label>
@@ -40,7 +40,7 @@ export default function SignupPage({ onSwitch }) {
             {loading ? 'Creating account...' : 'Create Account — It\'s Free'}
           </button>
         </form>
-        <p className="auth-switch">Already have an account? <a href="#" onClick={e => { e.preventDefault(); onSwitch() }}>Sign in</a></p>
+        <p className="auth-switch">Already have an account? <button type="button" className="link-btn" onClick={onSwitch}>Sign in</button></p>
       </div>
     </div>
   )

@@ -1,55 +1,30 @@
-#!/bin/bash
-# VirtueStage — Quick Deploy Script
-# Usage: ./deploy.sh [port]
-# Requires: Node.js 18+, Python 3.10+, GEMINI_API_KEY env var
-
-set -e
+#!/usr/bin/env bash
+# Build VirtueStage for a single-process deployment without Docker:
+# installs dependencies, builds the frontend into backend/public, and prints
+# the start command. Requires Node.js 22.9+ and (for real staging) Python 3.10+.
+set -euo pipefail
 
 PORT="${1:-3099}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "🏠 VirtueStage Deploy"
-echo "===================="
+command -v node >/dev/null || { echo "Node.js is required"; exit 1; }
 
-# Check requirements
-if ! command -v node &> /dev/null; then echo "❌ Node.js required"; exit 1; fi
-if ! command -v python3 &> /dev/null; then echo "❌ Python3 required"; exit 1; fi
-if [ -z "$GEMINI_API_KEY" ]; then
-    echo "⚠️  GEMINI_API_KEY not set — staging won't work without it"
-    echo "   Set it: export GEMINI_API_KEY=your_key"
+echo "Installing backend dependencies..."
+(cd "$DIR/backend" && npm ci --omit=dev)
+
+if [ "${STAGING_MODE:-gemini}" != "demo" ]; then
+  command -v python3 >/dev/null || { echo "python3 is required (or set STAGING_MODE=demo)"; exit 1; }
+  echo "Installing Python engine dependencies..."
+  python3 -m pip install -r "$DIR/engine/requirements.txt"
+  [ -n "${GEMINI_API_KEY:-}" ] || echo "Warning: GEMINI_API_KEY is not set; staging will fail until it is."
 fi
 
-# Install backend deps
-echo "📦 Installing backend dependencies..."
-cd "$DIR/backend"
-npm install --production 2>/dev/null
-
-# Install Python deps
-echo "🐍 Installing Python dependencies..."
-pip3 install google-genai Pillow --quiet 2>/dev/null || pip install google-genai Pillow --quiet 2>/dev/null
-
-# Build frontend
-echo "🔨 Building frontend..."
-cd "$DIR/website"
-npm install 2>/dev/null
-npx vite build
-
-# Copy built frontend to backend static dir
-echo "📁 Setting up static serving..."
+echo "Building frontend..."
+(cd "$DIR/website" && npm ci && npx vite build)
 rm -rf "$DIR/backend/public"
 cp -r "$DIR/website/dist" "$DIR/backend/public"
-# Copy sample images
-cp -r "$DIR/website/public/images" "$DIR/backend/public/images" 2>/dev/null || true
 
-# Create data directories
-mkdir -p "$DIR/backend/data/uploads" "$DIR/backend/data/results"
-
-echo ""
-echo "✅ Build complete!"
-echo ""
-echo "To start:"
-echo "  cd $DIR/backend"
-echo "  GEMINI_API_KEY=your_key PORT=$PORT node server.js"
-echo ""
-echo "The app will serve at http://localhost:$PORT"
-echo "Frontend is embedded — no separate dev server needed in production."
+echo
+echo "Build complete. Start with:"
+echo "  cd $DIR/backend && PORT=$PORT JWT_SECRET=... ${STAGING_MODE:+STAGING_MODE=$STAGING_MODE }node server.js"
+echo "Then open http://localhost:$PORT"

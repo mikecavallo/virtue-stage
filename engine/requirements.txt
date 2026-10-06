@@ -1,14 +1,7 @@
-# Virtual Home Staging Engine Requirements
+# Required: Gemini vision + image generation, image handling, fidelity scoring
+google-genai>=1.30.0
+pillow>=10.1.0
+numpy>=1.24
 
-# Core dependencies
-openai>=1.0.0
-requests>=2.25.0
-pillow>=9.0.0
-
-# Optional dependencies for additional models
-# replicate  # Add if using Replicate API
-# fal-client  # Add if using fal.ai directly
-
-# Development dependencies
-pytest>=6.0.0
-black>=22.0.0
+# Optional: OpenAI gpt-image-1 render provider (`--models openai`)
+# openai>=1.0.0
