@@ -1,15 +1,16 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState } from 'react'
 import { AuthProvider, useAuth } from './auth'
 import LoginPage from './pages/LoginPage'
 import SignupPage from './pages/SignupPage'
 import DashboardPage from './pages/DashboardPage'
 
-const rooms = [
-  { id: 'living-room', label: 'Living Room', before: '/images/before/living-room.jpg', after: '/images/after/living-room.jpg' },
-  { id: 'bedroom', label: 'Bedroom', before: '/images/before/bedroom.jpg', after: '/images/after/bedroom.jpg' },
-  { id: 'kitchen', label: 'Kitchen', before: '/images/before/kitchen.jpg', after: '/images/after/kitchen.jpg' },
-  { id: 'dining-room', label: 'Dining Room', before: '/images/before/dining-room.jpg', after: '/images/after/dining-room.jpg' },
-  { id: 'bathroom', label: 'Bathroom', before: '/images/before/bathroom.jpg', after: '/images/after/bathroom.jpg' },
+// AI-generated sample rooms (see website/generate_staged.py). They illustrate
+// output quality only: they are not before/after edits of a real listing photo.
+const samples = [
+  { id: 'living-room', label: 'Living Room', src: '/images/after/living-room.jpg' },
+  { id: 'bedroom', label: 'Bedroom', src: '/images/after/bedroom.jpg' },
+  { id: 'kitchen', label: 'Kitchen', src: '/images/after/kitchen.jpg' },
+  { id: 'dining-room', label: 'Dining Room', src: '/images/after/dining-room.jpg' },
 ]
 
 /* ─── Logo SVG ─── */
@@ -22,61 +23,13 @@ function Logo({ size = 28 }) {
   )
 }
 
-/* ─── Before / After Slider ─── */
-function CompareSlider({ before, after, label }) {
-  const containerRef = useRef(null)
-  const [pos, setPos] = useState(50)
-  const dragging = useRef(false)
-
-  const update = useCallback((clientX) => {
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const x = Math.min(Math.max(clientX - rect.left, 0), rect.width)
-    setPos((x / rect.width) * 100)
-  }, [])
-
-  useEffect(() => {
-    const onMove = (e) => {
-      if (!dragging.current) return
-      e.preventDefault()
-      update(e.touches ? e.touches[0].clientX : e.clientX)
-    }
-    const onUp = () => { dragging.current = false }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    window.addEventListener('touchmove', onMove, { passive: false })
-    window.addEventListener('touchend', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      window.removeEventListener('touchmove', onMove)
-      window.removeEventListener('touchend', onUp)
-    }
-  }, [update])
-
-  const startDrag = (e) => {
-    dragging.current = true
-    update(e.touches ? e.touches[0].clientX : e.clientX)
-  }
-
+/* ─── Sample image card ─── */
+function SampleCard({ src, label }) {
   return (
-    <div className="compare-slider-wrap">
-      {label && <h3 className="compare-label">{label}</h3>}
-      <div ref={containerRef} className="compare-slider" onMouseDown={startDrag} onTouchStart={startDrag}>
-        <img src={after} alt="After staging" className="compare-img" draggable={false} />
-        <div className="compare-before" style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}>
-          <img src={before} alt="Before staging" className="compare-img" draggable={false} />
-        </div>
-        <span className="compare-tag compare-tag--before">Before</span>
-        <span className="compare-tag compare-tag--after">After</span>
-        <div className="compare-handle" style={{ left: `${pos}%` }}>
-          <div className="compare-handle-line" />
-          <div className="compare-handle-knob">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M7 4l-5 6 5 6M13 4l5 6-5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          </div>
-        </div>
-      </div>
-    </div>
+    <figure className="sample-card">
+      <img src={src} alt={`AI-generated sample: ${label}`} loading="lazy" />
+      <figcaption>{label}</figcaption>
+    </figure>
   )
 }
 
@@ -102,7 +55,7 @@ function LandingPage({ onLogin, onSignup }) {
             <span>VirtueStage</span>
           </a>
           <div className="nav-links">
-            <a href="#gallery">Gallery</a>
+            <a href="#gallery">Samples</a>
             <a href="#how">How It Works</a>
             <a href="#pricing">Pricing</a>
             <a href="#faq">FAQ</a>
@@ -128,25 +81,23 @@ function LandingPage({ onLogin, onSignup }) {
           </p>
           <div className="hero-ctas">
             <button type="button" className="btn btn--primary btn--lg" onClick={onSignup}>Stage Your First Room Free →</button>
-            <a href="#gallery" className="btn btn--ghost btn--lg">See Examples ↓</a>
+            <a href="#gallery" className="btn btn--ghost btn--lg">See Samples ↓</a>
           </div>
         </div>
         <div className="hero-slider">
-          <CompareSlider before={rooms[0].before} after={rooms[0].after} />
+          <SampleCard src={samples[0].src} label="AI-generated sample: modern living room" />
         </div>
       </section>
 
       {/* GALLERY */}
       <section id="gallery" className="gallery">
         <div className="section-header">
-          <span className="badge">Examples</span>
-          <h2 className="section-title">See the transformation</h2>
-          <p className="section-sub">Sample before/after pairs generated with AI image models during development. Drag the slider to compare.</p>
+          <span className="badge">Samples</span>
+          <h2 className="section-title">What AI staging output looks like</h2>
+          <p className="section-sub">AI-generated sample rooms made during development to illustrate the output style. They are not before/after edits of real listing photos. Sign up to stage your own photo and compare before and after side by side.</p>
         </div>
         <div className="gallery-grid">
-          {rooms.map((room) => (
-            <CompareSlider key={room.id} before={room.before} after={room.after} label={room.label} />
-          ))}
+          {samples.map((room) => <SampleCard key={room.id} src={room.src} label={room.label} />)}
         </div>
       </section>
 
@@ -246,7 +197,7 @@ function LandingPage({ onLogin, onSignup }) {
             <p>AI virtual staging for real estate listing photos.</p>
           </div>
           <div className="footer-links">
-            <div><h4>Product</h4><a href="#gallery">Examples</a><a href="#how">How It Works</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></div>
+            <div><h4>Product</h4><a href="#gallery">Samples</a><a href="#how">How It Works</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></div>
           </div>
         </div>
         <div className="footer-bottom"><p>&copy; 2026 VirtueStage</p></div>
