@@ -1,6 +1,7 @@
-# Required: Gemini image generation + room detection
-google-genai>=1.0.0
-pillow>=10.0.0
+# Required: Gemini vision + image generation, image handling, fidelity scoring
+google-genai>=1.30.0
+pillow>=10.1.0
+numpy>=1.24
 
-# Optional: OpenAI gpt-image-1 provider (CLI only, `--models openai`)
+# Optional: OpenAI gpt-image-1 render provider (`--models openai`)
 # openai>=1.0.0

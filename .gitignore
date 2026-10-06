@@ -39,3 +39,7 @@ playwright-report/
 # Logs / OS
 *.log
 .DS_Store
+
+# Engine eval output and pytest cache
+engine/eval/out/
+.pytest_cache/
