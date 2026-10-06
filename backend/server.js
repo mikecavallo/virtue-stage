@@ -13,7 +13,23 @@ const sharp = require('sharp');
 const app = express();
 const PORT = process.env.PORT || 3099;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
-const DATA_DIR = path.join(__dirname, 'data');
+if (!process.env.JWT_SECRET && process.env.NODE_ENV !== 'test') {
+  console.warn('JWT_SECRET not set: using a random secret, so sessions reset on every restart.');
+}
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
+const ENGINE_DIR = path.join(__dirname, '..', 'engine');
+const PYTHON = process.env.PYTHON_BIN || 'python3';
+
+// STAGING_MODE=demo skips the Python/Gemini engine and returns a bundled sample
+// image, so the whole app can be run and tested without an API key.
+const STAGING_MODE = (process.env.STAGING_MODE || 'gemini').toLowerCase() === 'demo' ? 'demo' : 'gemini';
+const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-flash';
+const MODEL_LABEL = STAGING_MODE === 'demo' ? 'demo-sample' : GEMINI_IMAGE_MODEL;
+const DEMO_SAMPLE_DIRS = [
+  process.env.DEMO_SAMPLES_DIR,
+  path.join(__dirname, 'public', 'images', 'after'),
+  path.join(__dirname, '..', 'website', 'public', 'images', 'after'),
+].filter(Boolean);
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const RESULTS_DIR = path.join(DATA_DIR, 'results');
 const THUMBS_DIR = path.join(DATA_DIR, 'thumbnails');
@@ -117,6 +133,11 @@ function authMiddleware(req, res, next) {
 }
 
 // ─── Rate limiting: max 3 concurrent jobs per user ───
+// Credits not already committed to in-flight jobs (credits are deducted on completion)
+function availableCredits(user) {
+  return user.credits - checkConcurrentJobs(user.id);
+}
+
 function checkConcurrentJobs(userId) {
   const count = db.prepare("SELECT COUNT(*) as c FROM jobs WHERE user_id = ? AND status = 'processing'").get(userId);
   return count.c;
@@ -166,7 +187,7 @@ app.get('/api/credits', authMiddleware, (req, res) => {
 });
 
 // ─── Health ───
-app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', stagingMode: STAGING_MODE }));
 
 // ─── Staging prompts (product IP — architecture-first approach) ───
 
@@ -642,10 +663,13 @@ const detectUpload = multer({
 app.post('/api/staging/detect-room', authMiddleware, detectUpload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-  const enginePath = path.join(__dirname, '..', 'engine', 'detect_room.py');
-  const proc = spawn('python3', [enginePath, req.file.path], {
-    env: { ...process.env, GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '' }
-  });
+  if (STAGING_MODE === 'demo') {
+    try { fs.unlinkSync(req.file.path); } catch {}
+    return res.json({ room_type: 'living-room', confidence: 0, details: 'Demo mode: room detection is not run.', demo: true });
+  }
+
+  const enginePath = path.join(ENGINE_DIR, 'detect_room.py');
+  const proc = spawn(PYTHON, [enginePath, req.file.path], { env: engineEnv() });
 
   let stdout = '', stderr = '';
   proc.stdout.on('data', d => { stdout += d; });
@@ -688,21 +712,98 @@ const uploadMiddleware = multer({
   }
 });
 
+function engineEnv() {
+  return { ...process.env, GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '' };
+}
+
+// Room-type detection via the Python engine. Resolves to a room type string,
+// falling back to living-room on any failure (and always in demo mode).
+function detectRoomType(imagePath) {
+  if (STAGING_MODE === 'demo') return Promise.resolve('living-room');
+  return new Promise(resolve => {
+    const proc = spawn(PYTHON, [path.join(ENGINE_DIR, 'detect_room.py'), imagePath], { env: engineEnv() });
+    let stdout = '';
+    proc.stdout.on('data', d => { stdout += d; });
+    proc.on('error', () => resolve('living-room'));
+    proc.on('close', code => {
+      try { if (code === 0) return resolve(JSON.parse(stdout.trim()).room_type || 'living-room'); } catch {}
+      resolve('living-room');
+    });
+  });
+}
+
+function findDemoSample(roomType) {
+  for (const dir of DEMO_SAMPLE_DIRS) {
+    for (const name of [`${roomType}.jpg`, 'living-room.jpg']) {
+      const p = path.join(dir, name);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
+// Demo "engine": a bundled sample staged photo (or, if none is available, the
+// uploaded photo itself) with a visible DEMO banner. No AI call is made.
+async function renderDemoResult(uploadPath, roomType, outPath) {
+  const source = findDemoSample(roomType) || uploadPath;
+  const base = sharp(source).rotate().resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true });
+  const { data, info } = await base.jpeg({ quality: 85 }).toBuffer({ resolveWithObject: true });
+  const bannerH = Math.max(36, Math.round(info.height * 0.07));
+  const fontSize = Math.round(bannerH * 0.45);
+  const banner = Buffer.from(
+    `<svg width="${info.width}" height="${bannerH}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100%" height="100%" fill="#0f172a" fill-opacity="0.78"/>
+      <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif"
+        font-size="${fontSize}" font-weight="700" fill="#f59e0b">DEMO MODE: sample image, not generated from your photo</text>
+    </svg>`
+  );
+  await sharp(data).composite([{ input: banner, gravity: 'south' }]).jpeg({ quality: 85 }).toFile(outPath);
+}
+
+async function completeJob(jobId, userId, uploadPath, resultFilename, genTime) {
+  const resultPath = path.join(RESULTS_DIR, userId, resultFilename);
+  const resultThumb = await generateThumbnail(resultPath, userId, `${jobId}_result`);
+  const origThumb = await generateThumbnail(uploadPath, userId, `${jobId}_original`);
+  db.prepare('UPDATE jobs SET status = ?, result_path = ?, generation_time = ?, thumbnail_path = ?, original_thumbnail_path = ? WHERE id = ?')
+    .run('complete', resultFilename, genTime, resultThumb, origThumb, jobId);
+  // Credits are only deducted for successful jobs
+  db.prepare('UPDATE users SET credits = MAX(credits - 1, 0) WHERE id = ?').run(userId);
+  console.log(`[${jobId}] Complete. Credit deducted for user ${userId}`);
+}
+
+function runDemoJob(jobId, userId, roomType, uploadPath) {
+  const userResultsDir = path.join(RESULTS_DIR, userId);
+  fs.mkdirSync(userResultsDir, { recursive: true });
+  const resultFilename = `${jobId}_staged.jpg`;
+  const startTime = Date.now();
+  setTimeout(async () => {
+    try {
+      await renderDemoResult(uploadPath, roomType, path.join(userResultsDir, resultFilename));
+      await completeJob(jobId, userId, uploadPath, resultFilename, (Date.now() - startTime) / 1000);
+    } catch (e) {
+      console.error(`[${jobId}] Demo render failed:`, e.message);
+      db.prepare('UPDATE jobs SET status = ?, error = ? WHERE id = ?').run('error', 'Demo render failed', jobId);
+    }
+  }, Number(process.env.DEMO_DELAY_MS ?? 1500)); // simulated processing time
+}
+
 function runStagingJob(jobId, userId, style, roomType, uploadPath, originalFilename, { referenceImage } = {}) {
+  if (STAGING_MODE === 'demo') return runDemoJob(jobId, userId, roomType, uploadPath);
+
   const prompt = referenceImage
     ? buildReferencePrompt(style, roomType)
     : buildStagingPrompt(style, roomType);
-  const enginePath = path.join(__dirname, '..', 'engine', 'virtual_stager.py');
+  const enginePath = path.join(ENGINE_DIR, 'virtual_stager.py');
   const userResultsDir = path.join(RESULTS_DIR, userId);
   fs.mkdirSync(userResultsDir, { recursive: true });
 
-  const args = [enginePath, uploadPath, '--style', style, '--models', 'gemini', '--gemini-model', 'gemini-pro', '--prompt', prompt];
+  const args = [enginePath, uploadPath, '--style', style, '--models', 'gemini', '--gemini-model', GEMINI_IMAGE_MODEL, '--prompt', prompt];
   if (referenceImage) args.push('--reference-image', referenceImage);
   console.log(`[${jobId}] Spawning engine for user ${userId}`);
 
-  const proc = spawn('python3', args, {
-    cwd: userResultsDir,
-    env: { ...process.env, GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '' }
+  const proc = spawn(PYTHON, args, { cwd: userResultsDir, env: engineEnv() });
+  proc.on('error', (e) => {
+    db.prepare('UPDATE jobs SET status = ?, error = ? WHERE id = ?').run('error', `Could not start engine: ${e.message}`, jobId);
   });
 
   let stdout = '', stderr = '';
@@ -737,19 +838,8 @@ function runStagingJob(jobId, userId, style, roomType, uploadPath, originalFilen
 
     if (foundPath) {
       const resultFilename = `${jobId}_staged${ext}`;
-      const resultPath = path.join(userResultsDir, resultFilename);
-      fs.renameSync(foundPath, resultPath);
-
-      // Generate thumbnails
-      const resultThumb = await generateThumbnail(resultPath, userId, `${jobId}_result`);
-      const origThumb = await generateThumbnail(uploadPath, userId, `${jobId}_original`);
-
-      db.prepare('UPDATE jobs SET status = ?, result_path = ?, generation_time = ?, thumbnail_path = ?, original_thumbnail_path = ? WHERE id = ?')
-        .run('complete', resultFilename, genTime, resultThumb, origThumb, jobId);
-      
-      // Deduct credit on success
-      db.prepare('UPDATE users SET credits = MAX(credits - 1, 0) WHERE id = ?').run(userId);
-      console.log(`[${jobId}] Complete. Credit deducted for user ${userId}`);
+      fs.renameSync(foundPath, path.join(userResultsDir, resultFilename));
+      await completeJob(jobId, userId, uploadPath, resultFilename, genTime);
     } else {
       db.prepare('UPDATE jobs SET status = ?, error = ? WHERE id = ?')
         .run('error', 'Staged image not found. Output: ' + stdout, jobId);
@@ -768,8 +858,8 @@ app.post('/api/staging/upload', authMiddleware, uploadMiddleware.single('room_0'
   if (!STYLE_CONFIG[style]) return res.status(400).json({ error: 'Invalid style' });
 
   // Check credits
-  if (req.user.credits <= 0 && req.user.plan === 'free') {
-    return res.status(402).json({ error: 'No credits remaining. Upgrade to Pro for unlimited stagings.' });
+  if (availableCredits(req.user) <= 0 && req.user.plan === 'free') {
+    return res.status(402).json({ error: 'No credits remaining. Paid plans are not available yet.' });
   }
 
   // Rate limit: max 3 concurrent
@@ -795,21 +885,8 @@ app.post('/api/staging/upload', authMiddleware, uploadMiddleware.single('room_0'
 
   // Auto-detect room type if requested
   if (roomType === 'auto') {
-    const detectScript = path.join(__dirname, '..', 'engine', 'detect_room.py');
-    const proc = spawn('python3', [detectScript, uploadPath], {
-      env: { ...process.env, GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '' }
-    });
-    let stdout = '';
-    proc.stdout.on('data', d => { stdout += d; });
-    proc.on('close', code => {
-      let detected = 'living-room';
-      try {
-        if (code === 0) {
-          const result = JSON.parse(stdout.trim());
-          detected = result.room_type || 'living-room';
-          console.log(`[${jobId}] Auto-detected room: ${detected} (confidence: ${result.confidence})`);
-        }
-      } catch {}
+    detectRoomType(uploadPath).then(detected => {
+      console.log(`[${jobId}] Auto-detected room: ${detected}`);
       startJob(detected);
     });
   } else {
@@ -826,7 +903,7 @@ app.post('/api/staging/restage/:jobId', authMiddleware, (req, res) => {
   const newStyle = req.body.style;
   if (!newStyle || !STYLE_CONFIG[newStyle]) return res.status(400).json({ error: 'Invalid style' });
 
-  if (req.user.credits <= 0 && req.user.plan === 'free') {
+  if (availableCredits(req.user) <= 0 && req.user.plan === 'free') {
     return res.status(402).json({ error: 'No credits remaining.' });
   }
 
@@ -857,11 +934,11 @@ app.post('/api/projects', authMiddleware, uploadMiddleware.single('hero_image'),
 
   const userId = req.user.id;
   const style = req.body.style || 'modern';
-  let roomType = req.body.room_type || 'auto';
+  const roomType = req.body.room_type || 'auto';
   const name = req.body.name || 'Untitled Room';
 
   if (!STYLE_CONFIG[style]) return res.status(400).json({ error: 'Invalid style' });
-  if (req.user.credits <= 0 && req.user.plan === 'free') {
+  if (availableCredits(req.user) <= 0 && req.user.plan === 'free') {
     return res.status(402).json({ error: 'No credits remaining.' });
   }
 
@@ -878,22 +955,11 @@ app.post('/api/projects', authMiddleware, uploadMiddleware.single('hero_image'),
       .run(jobId, userId, style, finalRoomType, originalFilename, projectId);
 
     runStagingJob(jobId, userId, style, finalRoomType, uploadPath, originalFilename);
-    res.json({ project: { id: projectId, heroJobId: jobId, name: name, style, roomType: finalRoomType, autoDetected: roomType === 'auto' } });
+    res.json({ project: { id: projectId, heroJobId: jobId, name: name, style, roomType: finalRoomType, autoDetected: req.body.room_type === 'auto' || !req.body.room_type } });
   }
 
   if (roomType === 'auto') {
-    const detectScript = path.join(__dirname, '..', 'engine', 'detect_room.py');
-    const proc = spawn('python3', [detectScript, uploadPath], {
-      env: { ...process.env, GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '' }
-    });
-    let stdout = '';
-    proc.stdout.on('data', d => { stdout += d; });
-    proc.on('close', code => {
-      let detected = 'living-room';
-      try { if (code === 0) detected = JSON.parse(stdout.trim()).room_type || 'living-room'; } catch {}
-      roomType = detected;
-      createProject(detected);
-    });
+    detectRoomType(uploadPath).then(createProject);
   } else {
     createProject(roomType);
   }
@@ -916,7 +982,7 @@ app.post('/api/projects/:projectId/batch', authMiddleware, uploadMiddleware.arra
 
   const userId = req.user.id;
   const creditsNeeded = req.files.length;
-  if (req.user.credits < creditsNeeded && req.user.plan === 'free') {
+  if (availableCredits(req.user) < creditsNeeded && req.user.plan === 'free') {
     return res.status(402).json({ error: `Need ${creditsNeeded} credits, you have ${req.user.credits}.` });
   }
 
@@ -965,7 +1031,7 @@ app.get('/api/projects/:projectId', authMiddleware, (req, res) => {
       originalUrl: j.original_path ? `/api/staging/images/${userId}/${j.original_path}` : null,
       results: j.result_path ? [{
         url: `/api/staging/images/${userId}/${j.result_path}`,
-        model: 'nano-banana-pro',
+        model: MODEL_LABEL,
         metadata: { generation_time: j.generation_time }
       }] : [],
       error: j.error,
@@ -1021,7 +1087,7 @@ app.get('/api/staging/results/:jobId', authMiddleware, (req, res) => {
     originalUrl: job.original_path ? `/api/staging/images/${userId}/${job.original_path}` : null,
     results: job.result_path ? [{
       url: `/api/staging/images/${userId}/${job.result_path}`,
-      model: 'nano-banana-pro',
+      model: MODEL_LABEL,
       metadata: { generation_time: job.generation_time }
     }] : [],
     error: job.error,
@@ -1042,7 +1108,7 @@ app.get('/api/staging/jobs', authMiddleware, (req, res) => {
     originalThumbnailUrl: job.original_thumbnail_path ? `/api/staging/thumbnails/${userId}/${job.original_thumbnail_path}` : null,
     results: job.result_path ? [{
       url: `/api/staging/images/${userId}/${job.result_path}`,
-      model: 'nano-banana-pro',
+      model: MODEL_LABEL,
       metadata: { generation_time: job.generation_time }
     }] : [],
     error: job.error,
@@ -1056,7 +1122,7 @@ const publicDir = path.join(__dirname, 'public');
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir));
   // SPA fallback — serve index.html for all non-API routes
-  app.get('*', (req, res, next) => {
+  app.get('/{*splat}', (req, res, next) => {
     if (req.path.startsWith('/api/')) return next();
     res.sendFile('index.html', { root: publicDir });
   });
@@ -1065,15 +1131,19 @@ if (fs.existsSync(publicDir)) {
 
 // ─── Error handling middleware ───
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Max 20MB.' });
     return res.status(400).json({ error: err.message });
   }
   if (err.message === 'Only images allowed') return res.status(400).json({ error: err.message });
+  console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`VirtueStage backend running on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`VirtueStage backend running on http://localhost:${PORT} (staging mode: ${STAGING_MODE})`);
+  });
+}
+
+module.exports = app;
