@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Eraser, Lock, Palette, RefreshCw, ScanSearch, Sofa, Sparkles, Undo2, Redo2, Wand2 } from 'lucide-react'
+import { Eraser, Lock, Palette, RefreshCw, ScanSearch, Sofa, Sparkles, Undo2, Redo2, Wand2, CopyCheck, X } from 'lucide-react'
 import { ROOM_TYPES, STYLES, STYLE_IDS } from '../ai/prompts.js'
 
 const SWATCHES = [
@@ -134,15 +134,76 @@ function ObjectCard({ object, objects, live, canDemoRemove, onAction, onUnlock, 
   )
 }
 
-export function EditTab({ photo, objects, selected, live, scanned, busy, onSelect, onAction, onScan, onUnlock }) {
+function Swatches({ label, busy, onPick }) {
+  return (
+    <div className="swatches">
+      {SWATCHES.map((s) => (
+        <button key={s.hex} className="swatch" style={{ background: s.hex }} title={s.name} aria-label={`Recolor ${label} ${s.name}`} disabled={busy} onClick={() => onPick(s.hex, s.name)} />
+      ))}
+      <label className="swatch swatch--custom" title="Custom color">
+        <input type="color" aria-label="Custom color" disabled={busy} onChange={(e) => onPick(e.target.value, e.target.value)} />
+      </label>
+    </div>
+  )
+}
+
+// Several objects at once: one AI call removes them all (one charge instead of
+// one per item); recolor applies the same color to each.
+function MultiCard({ selected, live, canDemoRemove, onAction, onUnlock, onClear, busy }) {
+  const names = selected.map((o) => o.label)
+  return (
+    <div className="obj-card">
+      <div className="obj-card-head">
+        <h3>{selected.length} items selected</h3>
+        <span className="muted small">{names.join(', ')}</span>
+      </div>
+      <div className="action">
+        <div className="action-title">
+          <Eraser size={15} /> Remove all
+          {live ? <span className="tag tag--ok">one AI call</span> : canDemoRemove && <span className="tag">precomputed</span>}
+        </div>
+        {live || canDemoRemove ? (
+          <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => onAction('remove')}>
+            Remove {selected.length} items
+          </button>
+        ) : (
+          <LockedHint onUnlock={onUnlock} />
+        )}
+      </div>
+      <div className="action">
+        <div className="action-title">
+          <Palette size={15} /> Recolor all <span className="tag tag--ok">instant, in your browser</span>
+        </div>
+        <Swatches label="selection" busy={busy} onPick={(hex, name) => onAction('recolor', hex, name)} />
+      </div>
+      <p className="muted small">Restyle and replace work on one item at a time.</p>
+      <button className="btn btn--ghost btn--sm" onClick={onClear}>
+        <X size={14} /> Clear selection
+      </button>
+    </div>
+  )
+}
+
+export function EditTab({ photo, objects, selected, live, scanned, busy, multiSelect, onMultiSelect, onSelect, onAction, onScan, onUnlock }) {
+  const selectedIds = selected.map((o) => o.id)
+  const single = selected.length === 1 ? selected[0] : null
   return (
     <div className="tab-body">
       {objects.length > 0 ? (
         <>
-          <p className="muted small">Tap furniture in the photo, or pick it here.</p>
+          <div className="edit-head">
+            <p className="muted small">Tap furniture in the photo, or pick it here. Shift-click to select several.</p>
+            <button className={`chip chip--toggle ${multiSelect ? 'chip--on' : ''}`} aria-pressed={multiSelect} onClick={() => onMultiSelect(!multiSelect)}>
+              <CopyCheck size={13} /> Select multiple
+            </button>
+          </div>
           <div className="obj-chips">
             {objects.map((o) => (
-              <button key={o.id} className={`chip ${selected?.id === o.id ? 'chip--on' : ''}`} onClick={() => onSelect(selected?.id === o.id ? null : o.id)}>
+              <button
+                key={o.id}
+                className={`chip ${selectedIds.includes(o.id) ? 'chip--on' : ''}`}
+                onClick={(e) => onSelect(o.id, multiSelect || e.shiftKey || e.metaKey || e.ctrlKey)}
+              >
                 {o.label}
               </button>
             ))}
@@ -167,15 +228,26 @@ export function EditTab({ photo, objects, selected, live, scanned, busy, onSelec
       )}
       {!live && photo?.kind === 'upload' && <LockedHint onUnlock={onUnlock} />}
 
-      {selected && (
+      {single && (
         <ObjectCard
-          key={selected.id}
-          object={selected}
+          key={single.id}
+          object={single}
           objects={objects}
           live={live}
-          canDemoRemove={Boolean(selected.removal) && photo?.kind === 'sample'}
+          canDemoRemove={Boolean(single.removal) && photo?.kind === 'sample'}
           onAction={onAction}
           onUnlock={onUnlock}
+          busy={busy}
+        />
+      )}
+      {selected.length > 1 && (
+        <MultiCard
+          selected={selected}
+          live={live}
+          canDemoRemove={photo?.kind === 'sample' && selected.every((o) => o.removal)}
+          onAction={onAction}
+          onUnlock={onUnlock}
+          onClear={() => onSelect(null)}
           busy={busy}
         />
       )}

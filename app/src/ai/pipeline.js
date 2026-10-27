@@ -6,7 +6,7 @@
 //    architectural changes and we regenerate once with the problems spelled out.
 import { generateImage, checkStructure } from './tasks.js'
 import { buildEditPrompt, buildPolishPrompt, buildStagingPrompt } from './prompts.js'
-import { nearestAspectRatio, withDescendants, toPixels } from '../lib/geometry.js'
+import { nearestAspectRatio, protectedOutlines, topLevel, withDescendants, toPixels } from '../lib/geometry.js'
 import { hexToRgb } from '../lib/pixels.js'
 import {
   base64ToCanvas,
@@ -29,8 +29,9 @@ const diag = (c) => Math.hypot(c.width, c.height)
 export function editMask(canvas, polygons, action, subtract = []) {
   const d = diag(canvas)
   const opts = {
-    // Removals reach further than the outline to take the object's shadow with it.
-    remove: { dilate: d * 0.02, feather: d * 0.01 },
+    // Removals include the cleanup pass: the mask reaches past the outline to
+    // take shadows and smudges with it (untouched neighbours are cut back out).
+    remove: { dilate: d * 0.035, feather: d * 0.015 },
     polish: { dilate: d * 0.035, feather: d * 0.015 },
     replace: { dilate: d * 0.03, feather: d * 0.012 },
     restyle: { dilate: d * 0.005, feather: d * 0.004 },
@@ -71,17 +72,21 @@ async function generateMasked({ settings, canvas, prompt, images, mask, firstSta
   return { canvas: compositeWithMask(canvas, best.generated, mask), drift: best.drift, attempts: best.attempt }
 }
 
-export async function runObjectEdit({ settings, canvas, objects, object, action, instruction, onStatus = () => {}, signal }) {
-  const targets = action === 'remove' ? withDescendants(objects, object.id) : [object]
+// `objectIds` (removal only) removes a whole multi-selection in one model call.
+export async function runObjectEdit({ settings, canvas, objects, object, objectIds, action, instruction, onStatus = () => {}, signal }) {
+  const picks = action === 'remove' && objectIds?.length ? topLevel(objects, objectIds) : [object.id]
+  const pickObjs = picks.map((id) => objects.find((o) => o.id === id)).filter(Boolean)
+  const targets = action === 'remove' ? [...new Map(pickObjs.flatMap((o) => withDescendants(objects, o.id)).map((o) => [o.id, o])).values()] : [object]
   const polygons = targets.map((o) => o.mask)
-  const childLabels = targets.slice(1).map((o) => o.label)
+  const labels = pickObjs.map((o) => o.label)
+  const childLabels = targets.filter((t) => !picks.includes(t.id)).map((o) => o.label)
   const result = await generateMasked({
     settings,
     canvas,
-    prompt: buildEditPrompt({ action, label: object.label, childLabels, instruction }),
+    prompt: buildEditPrompt({ action, label: object.label, labels, childLabels, instruction }),
     images: [canvasToBase64(canvas), canvasToBase64(guideImage(canvas, polygons))],
-    mask: editMask(canvas, polygons, action),
-    firstStatus: `Asking ${settings.imageModel} to ${action} the ${object.label}`,
+    mask: editMask(canvas, polygons, action, action === 'remove' ? protectedOutlines(objects, polygons) : []),
+    firstStatus: picks.length > 1 ? `Asking ${settings.imageModel} to remove ${picks.length} items in one pass` : `Asking ${settings.imageModel} to ${action} the ${object.label}`,
     pasteStatus: 'Pasting the edit back inside the outline',
     onStatus,
     signal,

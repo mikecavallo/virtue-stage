@@ -166,6 +166,13 @@ describe('prompts', () => {
     expect(p).toContain('Do not change anything outside the highlighted areas')
   })
 
+  it('removes several objects in one prompt and asks for a clean result', () => {
+    const p = buildEditPrompt({ action: 'remove', label: 'armchair', labels: ['armchair', 'side table'], childLabels: ['throw pillow', 'table lamp'] })
+    expect(p).toContain('the highlighted armchair and side table and the throw pillow and table lamp resting on them')
+    expect(p).toContain('the objects to remove highlighted')
+    expect(p).toContain('no ghost shadows')
+  })
+
   it('mentions children when removing a parent object', () => {
     const p = buildEditPrompt({ action: 'remove', label: 'sofa', childLabels: ['throw pillow'] })
     expect(p).toContain('the highlighted sofa and the throw pillow resting on it')

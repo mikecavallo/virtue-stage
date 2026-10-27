@@ -760,6 +760,41 @@ h3 {
   gap: 0.5rem;
   margin-top: 0.6rem;
 }
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.segmented button {
+  padding: 0.32rem 0.7rem;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.segmented button.is-on {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.edit-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.chip.chip--toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  text-transform: none;
+}
+.editor-tools {
+  flex-wrap: wrap;
+}
 .polish-btn:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent-2);

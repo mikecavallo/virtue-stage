@@ -9,7 +9,7 @@ import { initialState, reducer, renderOps, replayBaseIndex, withoutRemoved, disc
 import { SAMPLES, sampleBase, sampleImage, loadInventory } from '../lib/samples.js'
 import { loadSettings, saveSettings } from '../lib/settings.js'
 import { canvasToBase64, canvasToBlob, imageToCanvas, loadImage, stampDisclosure } from '../lib/canvas.js'
-import { fitWithin, slugify, withDescendants } from '../lib/geometry.js'
+import { describeItems, fitWithin, slugify, topLevel, withDescendants } from '../lib/geometry.js'
 import { detectRoom, segmentObjects } from '../ai/tasks.js'
 import { runObjectEdit, runPolish, runStaging } from '../ai/pipeline.js'
 import { STYLES } from '../ai/prompts.js'
@@ -42,7 +42,9 @@ export default function Studio({ initialSample }) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const [tab, setTab] = useState('edit')
   const [dialog, setDialog] = useState(null)
+  // Compare against the step right before this one (default) or the original.
   const [compare, setCompare] = useState(false)
+  const [multiSelect, setMultiSelect] = useState(false)
   const [showOutlines, setShowOutlines] = useState(true)
   const [keyPrompt, setKeyPrompt] = useState(null)
   const retryRef = useRef(null)
@@ -61,7 +63,7 @@ export default function Studio({ initialSample }) {
   const { photo, steps, cursor } = state
   const step = steps[cursor]
   const objects = step?.objects || []
-  const selected = objects.find((o) => o.id === state.selectedId) || null
+  const selected = objects.filter((o) => state.selectedIds.includes(o.id))
   const busy = Boolean(state.busy)
   const regions = editedRegions(steps, cursor)
 
@@ -225,27 +227,33 @@ export default function Studio({ initialSample }) {
     }
   }
 
+  // Acts on the whole selection: remove and recolor accept several objects
+  // (one model call for a multi-remove); restyle and replace take one.
   const onAction = async (action, value, name) => {
     const st = stateRef.current
     const cur = st.steps[st.cursor]
-    const obj = cur.objects.find((o) => o.id === st.selectedId)
-    if (!obj) return
+    const picked = cur.objects.filter((o) => st.selectedIds.includes(o.id))
+    if (!picked.length) return
+    const obj = picked[0]
+    const ids = picked.map((o) => o.id)
+    const what = new Set(picked.map((o) => o.label)).size > 3 ? `${picked.length} items` : describeItems(picked.map((o) => o.label))
     if (action === 'recolor') {
-      return applyReplayable({ type: 'recolor', objectId: obj.id, hex: value }, `Recolored ${obj.label} ${String(name).toLowerCase()}`, 'in-browser recolor')
+      return applyReplayable({ type: 'recolor', objectIds: ids, hex: value }, `Recolored ${what} ${String(name).toLowerCase()}`, 'in-browser recolor')
     }
     if (action === 'remove' && !settingsRef.current.apiKey) {
-      const polygons = withDescendants(cur.objects, obj.id).map((o) => o.mask)
-      return applyReplayable({ type: 'demo-remove', objectId: obj.id, polygons }, `Removed ${obj.label}`, 'LaMa, precomputed')
+      const polygons = topLevel(cur.objects, ids).flatMap((id) => withDescendants(cur.objects, id).map((o) => o.mask))
+      return applyReplayable({ type: 'demo-remove', objectIds: ids, polygons }, `Removed ${what}`, 'LaMa, precomputed')
     }
+    if (action !== 'remove' && picked.length > 1) return
     const verb = { remove: 'Removing', restyle: 'Restyling', replace: 'Replacing' }[action]
     await runGenerative(
-      `${verb} the ${obj.label}`,
+      `${verb} ${picked.length > 1 ? what : `the ${obj.label}`}`,
       (signal, onStatus) =>
-        runObjectEdit({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), objects: cur.objects, object: obj, action, instruction: value, onStatus, signal }),
+        runObjectEdit({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), objects: cur.objects, object: obj, objectIds: ids, action, instruction: value, onStatus, signal }),
       (res) => ({
-        label: action === 'remove' ? `Removed ${obj.label}` : action === 'restyle' ? `Restyled ${obj.label}: ${value}` : `Replaced ${obj.label} with ${value}`,
+        label: action === 'remove' ? `Removed ${what}` : action === 'restyle' ? `Restyled ${obj.label}: ${value}` : `Replaced ${obj.label} with ${value}`,
         engine: settingsRef.current.imageModel,
-        note: res.attempts > 1 ? 'regenerated once (model shifted the photo)' : '',
+        note: [picked.length > 1 ? 'one AI call' : '', res.attempts > 1 ? 'regenerated once (model shifted the photo)' : ''].filter(Boolean).join(', '),
         objects: action === 'replace' ? cur.objects.map((o) => (o.id === obj.id ? { ...o, label: value.replace(/^an? /, '') } : o)) : withoutRemoved(cur.objects, res.removedIds),
         scanned: cur.scanned,
         op: { type: action, polygons: res.polygons },
@@ -290,8 +298,8 @@ export default function Studio({ initialSample }) {
     )
   }
 
-  const onSelect = (id) => {
-    dispatch({ type: 'select', id })
+  const onSelect = (id, additive = false) => {
+    dispatch({ type: 'select', id, additive })
     if (id) {
       setTab('edit')
       setCompare(false)
@@ -419,12 +427,14 @@ export default function Studio({ initialSample }) {
           <Editor
             photo={photo}
             url={step?.url}
-            originalUrl={steps[0]?.url}
+            compareUrl={compare === 'original' ? steps[0]?.url : steps[cursor - 1]?.url}
+            compareLabel={compare === 'original' ? 'Original' : 'Before'}
             objects={objects}
-            selectedId={state.selectedId}
+            selectedIds={state.selectedIds}
+            multiSelect={multiSelect}
             onSelect={onSelect}
             busy={state.busy}
-            compare={compare}
+            compare={Boolean(compare)}
             showOutlines={showOutlines}
           />
           <div className="editor-tools">
@@ -432,9 +442,19 @@ export default function Studio({ initialSample }) {
               <input type="checkbox" checked={showOutlines} onChange={(e) => setShowOutlines(e.target.checked)} />
               Outlines
             </label>
-            <button className={`btn btn--ghost btn--sm ${compare ? 'is-on' : ''}`} disabled={cursor < 1} onClick={() => setCompare((c) => !c)}>
+            <button className={`btn btn--ghost btn--sm ${compare ? 'is-on' : ''}`} disabled={cursor < 1} onClick={() => setCompare((c) => (c ? false : 'previous'))}>
               <Columns2 size={15} /> {compare ? 'Back to editing' : 'Compare'}
             </button>
+            {compare && cursor > 1 && (
+              <div className="segmented" role="group" aria-label="Compare against">
+                <button className={compare === 'previous' ? 'is-on' : ''} onClick={() => setCompare('previous')}>
+                  Last step
+                </button>
+                <button className={compare === 'original' ? 'is-on' : ''} onClick={() => setCompare('original')}>
+                  Original
+                </button>
+              </div>
+            )}
             <button
               className="btn btn--outline btn--sm polish-btn"
               disabled={busy || !regions.length}
@@ -474,6 +494,8 @@ export default function Studio({ initialSample }) {
               live={live}
               scanned={Boolean(step?.scanned)}
               busy={busy}
+              multiSelect={multiSelect}
+              onMultiSelect={setMultiSelect}
               onSelect={onSelect}
               onAction={onAction}
               onScan={onScan}

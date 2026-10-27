@@ -10,6 +10,10 @@ import {
   polygonArea,
   withDescendants,
   fitWithin,
+  describeItems,
+  listJoin,
+  protectedOutlines,
+  topLevel,
 } from './geometry.js'
 
 const square = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
@@ -80,6 +84,17 @@ describe('children and hit testing', () => {
     expect(withDescendants(objects, 'sofa-1').map((o) => o.id)).toEqual(['sofa-1', 'throw-pillow-1'])
   })
 
+  it('a multi-selection of a sofa and its pillow collapses to the sofa', () => {
+    expect(topLevel(objects, ['throw-pillow-1', 'sofa-1', 'floor-lamp-1', 'sofa-1'])).toEqual(['sofa-1', 'floor-lamp-1'])
+  })
+
+  it('protects untouched neighbours but leaves rugs editable', () => {
+    const sofa = objects.find((o) => o.id === 'sofa-1')
+    const lamp = objects.find((o) => o.id === 'floor-lamp-1')
+    const pillow = objects.find((o) => o.id === 'throw-pillow-1')
+    expect(protectedOutlines(objects, [sofa.mask])).toEqual([pillow.mask, lamp.mask])
+  })
+
   it('a tap picks the smallest object under the finger', () => {
     expect(hitTest(objects, [200, 500]).id).toBe('throw-pillow-1')
     expect(hitTest(objects, [600, 500]).id).toBe('sofa-1')
@@ -98,5 +113,21 @@ describe('sizing', () => {
   it('fits without upscaling', () => {
     expect(fitWithin(3000, 2000, 1500)).toMatchObject({ width: 1500, height: 1000 })
     expect(fitWithin(800, 600, 1500)).toMatchObject({ width: 800, height: 600, scale: 1 })
+  })
+})
+
+describe('listJoin', () => {
+  it('reads like English', () => {
+    expect(listJoin(['sofa'])).toBe('sofa')
+    expect(listJoin(['sofa', 'rug'])).toBe('sofa and rug')
+    expect(listJoin(['sofa', 'rug', 'lamp'])).toBe('sofa, rug, and lamp')
+  })
+})
+
+describe('describeItems', () => {
+  it('groups repeats so batch labels read naturally', () => {
+    expect(describeItems(['armchair', 'armchair', 'side table'])).toBe('2 armchairs and side table')
+    expect(describeItems(['bench', 'bench', 'throw pillow', 'vanity', 'vanity'])).toBe('2 benches, throw pillow, and 2 vanities')
+    expect(describeItems(['rug'])).toBe('rug')
   })
 })
