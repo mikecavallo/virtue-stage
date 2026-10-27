@@ -13,6 +13,7 @@ import { fitWithin, slugify } from '../lib/geometry.js'
 import { detectRoom, segmentObjects } from '../ai/tasks.js'
 import { runObjectEdit, runStaging } from '../ai/pipeline.js'
 import { STYLES } from '../ai/prompts.js'
+import { isKeyError, listModels } from '../ai/gemini.js'
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 let stepCounter = 0
@@ -43,6 +44,8 @@ export default function Studio({ initialSample }) {
   const [dialog, setDialog] = useState(null)
   const [compare, setCompare] = useState(false)
   const [showOutlines, setShowOutlines] = useState(true)
+  const [keyPrompt, setKeyPrompt] = useState(null)
+  const retryRef = useRef(null)
 
   const canvases = useRef(new Map())
   const objectUrls = useRef([])
@@ -141,7 +144,7 @@ export default function Studio({ initialSample }) {
       dispatch({ type: 'set-objects', objects: objs.value })
       dispatch({ type: 'idle' })
     } else {
-      dispatch({ type: 'error', message: objs.reason?.message || 'Scan failed' })
+      failAi(objs.reason || new Error('Scan failed'), () => scanCanvas(canvas, { withRoom }))
     }
   }
 
@@ -172,7 +175,18 @@ export default function Studio({ initialSample }) {
     }
   }
 
-  const runGenerative = async (busyLabel, work, describe) => {
+  // A key problem (expired, invalid, no model access) opens the key prompt
+  // instead of a dead-end error. Saving a new key retries the failed action.
+  const failAi = (error, retry) => {
+    if (!isKeyError(error)) return dispatch({ type: 'error', message: error.message })
+    retryRef.current = retry || null
+    dispatch({ type: 'idle' })
+    setKeyPrompt({ reason: error.message, clearKey: error.code === 'bad_key' || error.code === 'expired_key', canRetry: Boolean(retry) })
+    setDialog('settings')
+  }
+
+  // Settings are read at run time (not captured), so a retry uses the new key.
+  const runGenerative = async (busyLabel, work, describe, after) => {
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
@@ -181,11 +195,10 @@ export default function Studio({ initialSample }) {
       const result = await work(ac.signal, (label) => dispatch({ type: 'busy', label }))
       const next = await makeStep(result.canvas, describe(result))
       dispatch({ type: 'push', step: next })
-      return { result, step: next }
+      if (after) await after(result, next)
     } catch (e) {
       if (e?.name === 'AbortError') dispatch({ type: 'idle' })
-      else dispatch({ type: 'error', message: e.message })
-      return null
+      else failAi(e, () => runGenerative(busyLabel, work, describe, after))
     }
   }
 
@@ -222,14 +235,14 @@ export default function Studio({ initialSample }) {
     if (action === 'remove' && !settingsRef.current.apiKey) {
       return applyReplayable({ type: 'demo-remove', objectId: obj.id }, `Removed ${obj.label}`, 'LaMa, precomputed')
     }
-    const s = settingsRef.current
     const verb = { remove: 'Removing', restyle: 'Restyling', replace: 'Replacing' }[action]
     await runGenerative(
       `${verb} the ${obj.label}`,
-      (signal, onStatus) => runObjectEdit({ settings: s, canvas: canvases.current.get(cur.id), objects: cur.objects, object: obj, action, instruction: value, onStatus, signal }),
+      (signal, onStatus) =>
+        runObjectEdit({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), objects: cur.objects, object: obj, action, instruction: value, onStatus, signal }),
       (res) => ({
         label: action === 'remove' ? `Removed ${obj.label}` : action === 'restyle' ? `Restyled ${obj.label}: ${value}` : `Replaced ${obj.label} with ${value}`,
-        engine: s.imageModel,
+        engine: settingsRef.current.imageModel,
         note: res.attempts > 1 ? 'regenerated once (model shifted the photo)' : '',
         objects: action === 'replace' ? cur.objects.map((o) => (o.id === obj.id ? { ...o, label: value.replace(/^an? /, '') } : o)) : withoutRemoved(cur.objects, res.removedIds),
         scanned: cur.scanned,
@@ -241,16 +254,15 @@ export default function Studio({ initialSample }) {
   const onStage = async ({ style, isEmpty }) => {
     const st = stateRef.current
     const cur = st.steps[st.cursor]
-    const s = settingsRef.current
-    const done = await runGenerative(
+    await runGenerative(
       `Staging: ${STYLES[style].label}`,
-      (signal, onStatus) => runStaging({ settings: s, canvas: canvases.current.get(cur.id), roomType: st.photo.roomType, style, isEmpty, onStatus, signal }),
-      (res) => ({ label: `Staged: ${STYLES[style].label}`, engine: s.imageModel, note: qaNote(res.qa), objects: [], scanned: false, op: { type: 'stage', style } }),
+      (signal, onStatus) => runStaging({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), roomType: st.photo.roomType, style, isEmpty, onStatus, signal }),
+      (res) => ({ label: `Staged: ${STYLES[style].label}`, engine: settingsRef.current.imageModel, note: qaNote(res.qa), objects: [], scanned: false, op: { type: 'stage', style } }),
+      async (result) => {
+        setTab('edit')
+        await scanCanvas(result.canvas)
+      },
     )
-    if (done) {
-      setTab('edit')
-      await scanCanvas(done.result.canvas)
-    }
   }
 
   const onSelect = (id) => {
@@ -297,8 +309,34 @@ export default function Studio({ initialSample }) {
   const saveAndClose = (next) => {
     saveSettings(next)
     setSettings(next)
+    settingsRef.current = next
+    setDialog(null)
+    setKeyPrompt(null)
+    const retry = retryRef.current
+    retryRef.current = null
+    if (retry && next.apiKey) retry()
+  }
+
+  const closeDialog = () => {
+    if (keyPrompt && retryRef.current) dispatch({ type: 'error', message: 'Live AI is paused until a working Gemini key is added.' })
+    retryRef.current = null
+    setKeyPrompt(null)
     setDialog(null)
   }
+
+  // Catch an expired or revoked key on arrival, before the user spends time on an edit.
+  // Listing models is free, and network failures here are ignored.
+  useEffect(() => {
+    const key = settingsRef.current.apiKey
+    if (!key) return
+    const ac = new AbortController()
+    listModels({ apiKey: key, signal: ac.signal }).catch((e) => {
+      if (!isKeyError(e)) return
+      setKeyPrompt({ reason: e.message, clearKey: e.code !== 'forbidden', canRetry: false })
+      setDialog('settings')
+    })
+    return () => ac.abort()
+  }, [])
 
   return (
     <div className="studio">
@@ -433,7 +471,9 @@ export default function Studio({ initialSample }) {
         </div>
       )}
 
-      {dialog === 'settings' && <SettingsDialog settings={settings} onSave={saveAndClose} onClose={() => setDialog(null)} />}
+      {dialog === 'settings' && (
+        <SettingsDialog key={keyPrompt ? 'key-prompt' : 'settings'} settings={settings} prompt={keyPrompt} onSave={saveAndClose} onClose={closeDialog} />
+      )}
       {dialog === 'export' && (
         <ExportDialog
           disclosure={disclosureText(steps, cursor)}

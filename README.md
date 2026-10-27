@@ -43,6 +43,8 @@ So the model never gets the final say over the whole frame:
 
 Cheap deterministic edits (demo removals, recolors) are *replayed* from the last AI-generated image instead of stacked, so they stay consistent with each other: recolor the armchair, then remove its pillow, and the fabric under the pillow comes out recolored too.
 
+If the key expires or Google rejects it, the studio opens a key prompt instead of failing: on arrival (a free models-list call checks the stored key) or mid-edit, where **Save and retry** reruns the action that failed with the new key.
+
 The API key is kept in `sessionStorage` (or `localStorage` if you tick "remember"), sent only in the `x-goog-api-key` header, and never touches any other server. Image models aren't on Gemini's free tier, so live edits need a key with billing enabled: roughly $0.05 per 2K edit with Nano Banana 2.1.
 
 ## Run it locally

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { API_BASE, GeminiError, extractImage, extractText, generateContent, parseJson } from './gemini.js'
+import { API_BASE, GeminiError, extractImage, extractText, generateContent, isKeyError, listModels, parseJson } from './gemini.js'
 import { generateImage, segmentObjects, checkStructure } from './tasks.js'
 import { buildEditPrompt, buildStagingPrompt, STYLE_IDS, ROOM_TYPES } from './prompts.js'
 
@@ -29,6 +29,22 @@ describe('generateContent', () => {
   ])('maps HTTP %s to a friendly error', async (status, body, code) => {
     const fetchImpl = async () => jsonResponse(status, body)
     await expect(generateContent({ apiKey: 'k', model: 'x', parts: [], fetchImpl })).rejects.toMatchObject({ code })
+  })
+
+  it('tells an expired key apart from an invalid one', async () => {
+    const expired = async () =>
+      jsonResponse(400, { error: { code: 400, message: 'API key expired. Please renew the API key.', status: 'INVALID_ARGUMENT', details: [{ reason: 'API_KEY_INVALID' }] } })
+    const err = await generateContent({ apiKey: 'k', model: 'x', parts: [], fetchImpl: expired }).catch((e) => e)
+    expect(err.code).toBe('expired_key')
+    expect(isKeyError(err)).toBe(true)
+    const unauth = async () => jsonResponse(401, { error: { message: 'Request had invalid authentication credentials.', status: 'UNAUTHENTICATED' } })
+    await expect(listModels({ apiKey: 'k', fetchImpl: unauth })).rejects.toMatchObject({ code: 'bad_key' })
+  })
+
+  it('only treats key problems as key errors', () => {
+    expect(isKeyError(new GeminiError('x', { code: 'quota' }))).toBe(false)
+    expect(isKeyError(new GeminiError('x', { code: 'forbidden' }))).toBe(true)
+    expect(isKeyError(new TypeError('network'))).toBe(false)
   })
 
   it('surfaces safety blocks', async () => {

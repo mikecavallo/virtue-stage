@@ -34,12 +34,23 @@ export class GeminiError extends Error {
 export const textPart = (text) => ({ text })
 export const imagePart = (data, mimeType = 'image/jpeg') => ({ inlineData: { mimeType, data } })
 
+// Errors the user fixes by entering a different key. The studio reacts to these
+// by opening the key prompt and retrying the action once a new key is saved.
+export const KEY_ERROR_CODES = new Set(['no_key', 'bad_key', 'expired_key', 'forbidden'])
+export const isKeyError = (e) => KEY_ERROR_CODES.has(e?.code)
+
 function friendlyError(status, body, model) {
   const err = body?.error || {}
   const msg = err.message || `Request failed with status ${status}`
   const reason = err.details?.find?.((d) => d.reason)?.reason || err.status
-  if (status === 400 && /API key/i.test(msg)) return new GeminiError('Google rejected this API key. Check it in Settings.', { status, code: 'bad_key', reason, raw: body })
-  if (status === 403) return new GeminiError('This key does not have access to that model. Image models need a paid-tier key.', { status, code: 'forbidden', reason, raw: body })
+  const keyProblem = status === 401 || /API[ _]key|API_KEY/i.test(`${msg} ${reason || ''}`)
+  if ((status === 400 || status === 401) && keyProblem) {
+    if (/expired/i.test(`${msg} ${reason || ''}`)) {
+      return new GeminiError('Your Gemini API key has expired. Paste a new one to keep going.', { status, code: 'expired_key', reason, raw: body })
+    }
+    return new GeminiError('Google rejected this Gemini API key. Paste a valid one to keep going.', { status, code: 'bad_key', reason, raw: body })
+  }
+  if (status === 403) return new GeminiError('This key does not have access to that model. Image models need a key with billing enabled.', { status, code: 'forbidden', reason, raw: body })
   if (status === 404) return new GeminiError(`Model "${model}" is not available to this key. Pick another model in Settings.`, { status, code: 'model_not_found', reason, raw: body })
   if (status === 429) return new GeminiError('Rate limit or quota reached. Image models are not on the free tier, so this usually means the key needs billing enabled.', { status, code: 'quota', reason, raw: body })
   if (status >= 500) return new GeminiError('Google returned a server error. Try again in a moment.', { status, code: 'server', reason, raw: body })
