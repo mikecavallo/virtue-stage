@@ -531,8 +531,50 @@ h3 {
 .compare--wide {
   box-shadow: var(--shadow);
 }
+.declutter-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 440px);
+  gap: 3.5rem;
+  align-items: center;
+}
+.declutter-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.declutter-copy h2 {
+  font-size: clamp(1.7rem, 3.4vw, 2.4rem);
+}
+.declutter-copy > p {
+  color: var(--text-2);
+  max-width: 34rem;
+}
+.checklist {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  max-width: 34rem;
+}
+.checklist li {
+  display: flex;
+  gap: 0.6rem;
+  color: var(--text-2);
+  font-size: 0.94rem;
+}
+.checklist svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--ok);
+}
+.checklist strong {
+  color: var(--text);
+}
 .declutter {
-  max-width: min(100%, 560px);
+  width: 100%;
+  max-width: 440px;
+  justify-self: center;
 }
 
 /* ── Object overlay (shared by hero + editor) ── */
@@ -1265,6 +1307,10 @@ select:focus {
 
 /* ── Responsive ── */
 @media (max-width: 960px) {
+  .declutter-grid {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
   .hero {
     grid-template-columns: 1fr;
     padding-top: 2.5rem;
