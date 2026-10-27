@@ -81,7 +81,18 @@ export async function generateContent({ apiKey, model, parts, generationConfig, 
   } catch {
     json = null
   }
-  if (!res.ok) throw friendlyError(res.status, json, model)
+  if (!res.ok) {
+    // Thinking levels differ per model (gemini-3.8-flash has no MINIMAL, image
+    // models have their own sets). If ours is rejected, retry once with the
+    // model's default instead of failing the whole edit.
+    const msg = json?.error?.message || ''
+    if (res.status === 400 && generationConfig?.thinkingConfig && /thinking|\blevel\b.*not supported/i.test(msg)) {
+      const fallback = { ...generationConfig }
+      delete fallback.thinkingConfig
+      return generateContent({ apiKey, model, parts, generationConfig: fallback, systemInstruction, signal, fetchImpl })
+    }
+    throw friendlyError(res.status, json, model)
+  }
   const blocked = blockReason(json)
   if (blocked) {
     throw new GeminiError(`The model declined this request (${blocked}). Try different wording or another photo.`, { status: res.status, code: 'blocked', reason: blocked, raw: json })

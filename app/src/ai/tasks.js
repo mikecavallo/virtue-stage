@@ -44,8 +44,9 @@ export async function segmentObjects({ apiKey, model, image, signal, fetchImpl }
     signal,
     fetchImpl,
     parts: [imagePart(image.data, image.mimeType), textPart(SEGMENT_PROMPT)],
-    // Google's docs recommend minimal thinking for segmentation.
-    generationConfig: jsonConfig(SEGMENT_SCHEMA, 'MINIMAL'),
+    // Lowest level gemini-3.8-flash accepts (it has no MINIMAL). Other models
+    // that reject it fall back to their default inside generateContent.
+    generationConfig: jsonConfig(SEGMENT_SCHEMA, 'LOW'),
   })
   let raw = parseJson(extractText(resp))
   if (raw && !Array.isArray(raw) && Array.isArray(raw.items)) raw = raw.items
