@@ -1,11 +1,18 @@
 node_modules/
-.env
-.env.local
-.env.production
-backend/data/virtuestage.db
-backend/data/uploads/
-backend/data/results/
-*.log
-.DS_Store
 dist/
 build/
+coverage/
+.env
+.env.*
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv/
+# demo-asset model weights and caches never go in the repo
+scripts/demo-assets/.cache/
+*.pt
+*.pth
+*.safetensors
+*.onnx
