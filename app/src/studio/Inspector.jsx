@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Eraser, Lock, Palette, RefreshCw, ScanSearch, Sofa, Sparkles, Undo2, Redo2, Wand2, CopyCheck, X } from 'lucide-react'
 import { ROOM_TYPES, STYLES, STYLE_IDS } from '../ai/prompts.js'
+import { describeItems } from '../lib/geometry.js'
 
 const SWATCHES = [
   { name: 'Navy', hex: '#1f2a44' },
@@ -255,10 +256,18 @@ export function EditTab({ photo, objects, selected, live, scanned, busy, multiSe
   )
 }
 
-export function StageTab({ photo, live, busy, onStage, onUnlock, onRoomType }) {
-  const [style, setStyle] = useState('scandinavian')
+// Up to this many remaining pieces can be "matched": stage the room around them.
+const MATCH_MAX = 3
+
+export function StageTab({ photo, objects = [], suggestMatch = false, live, busy, onStage, onUnlock, onRoomType }) {
+  const canMatch = objects.length > 0 && objects.length <= MATCH_MAX
+  const [choice, setChoice] = useState(null)
   const [isEmpty, setIsEmpty] = useState(null)
+  // Preselect matching only when the user has cleared the room down to a few pieces.
+  const style = choice === 'match' && !canMatch ? 'scandinavian' : choice || (canMatch && suggestMatch ? 'match' : 'scandinavian')
+  const setStyle = setChoice
   const empty = isEmpty ?? Boolean(photo?.isEmpty)
+  const matching = style === 'match'
   return (
     <div className="tab-body">
       <p className="muted small">
@@ -274,10 +283,22 @@ export function StageTab({ photo, live, busy, onStage, onUnlock, onRoomType }) {
           ))}
         </select>
       </label>
-      <label className="check">
-        <input type="checkbox" checked={empty} onChange={(e) => setIsEmpty(e.target.checked)} disabled={busy} />
-        Room is empty (otherwise existing furniture is replaced)
-      </label>
+      {!matching && (
+        <label className="check">
+          <input type="checkbox" checked={empty} onChange={(e) => setIsEmpty(e.target.checked)} disabled={busy} />
+          Room is empty (otherwise existing furniture is replaced)
+        </label>
+      )}
+      {canMatch ? (
+        <button className={`style-card style-card--match ${matching ? 'style-card--on' : ''}`} onClick={() => setStyle('match')} disabled={busy}>
+          <strong>Match existing furniture</strong>
+          <span className="muted small">
+            Keep the {describeItems(objects.map((o) => o.label))} and stage the rest of the room to match.
+          </span>
+        </button>
+      ) : (
+        objects.length > MATCH_MAX && <p className="muted small">Tip: remove all but 1 to {MATCH_MAX} pieces to stage the room around them.</p>
+      )}
       <div className="styles">
         {STYLE_IDS.map((id) => (
           <button key={id} className={`style-card ${style === id ? 'style-card--on' : ''}`} onClick={() => setStyle(id)} disabled={busy}>
@@ -291,8 +312,8 @@ export function StageTab({ photo, live, busy, onStage, onUnlock, onRoomType }) {
         ))}
       </div>
       {live ? (
-        <button className="btn btn--primary btn--full" disabled={busy} onClick={() => onStage({ style, isEmpty: empty })}>
-          <Sparkles size={16} /> Stage this room
+        <button className="btn btn--primary btn--full" disabled={busy} onClick={() => onStage({ style, isEmpty: empty, keep: matching ? objects : [] })}>
+          <Sparkles size={16} /> {matching ? 'Stage around what I kept' : 'Stage this room'}
         </button>
       ) : (
         <LockedHint onUnlock={onUnlock} />

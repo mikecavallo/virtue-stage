@@ -5,7 +5,7 @@
 //  - Whole-room staging can't be masked, so a vision model checks the result for
 //    architectural changes and we regenerate once with the problems spelled out.
 import { generateImage, checkStructure } from './tasks.js'
-import { buildEditPrompt, buildPolishPrompt, buildStagingPrompt } from './prompts.js'
+import { buildEditPrompt, buildMatchStagingPrompt, buildPolishPrompt, buildStagingPrompt } from './prompts.js'
 import { nearestAspectRatio, protectedOutlines, topLevel, withDescendants, toPixels } from '../lib/geometry.js'
 import { hexToRgb } from '../lib/pixels.js'
 import {
@@ -13,6 +13,7 @@ import {
   canvasToBase64,
   cloneCanvas,
   compositeWithMask,
+  cropBox,
   driftOutsideMask,
   guideImage,
   guideFromMask,
@@ -112,8 +113,12 @@ export async function runPolish({ settings, canvas, polygons, protect = [], onSt
   })
 }
 
-export async function runStaging({ settings, canvas, roomType, style, isEmpty, onStatus = () => {}, signal }) {
+// `keep`: objects to stage around ("match existing furniture"). They go in as
+// reference crops and their pixels are pasted back over the result.
+export async function runStaging({ settings, canvas, roomType, style, isEmpty, keep = [], onStatus = () => {}, signal }) {
   const input = canvasToBase64(canvas)
+  const refs = keep.map((o) => canvasToBase64(cropBox(canvas, o.box_2d), { maxSide: 768 }))
+  const keepMask = keep.length ? editMask(canvas, keep.map((o) => o.mask), 'restyle') : null
   const aspectRatio = nearestAspectRatio(canvas.width, canvas.height)
   let issues = []
   let last = null
@@ -122,13 +127,16 @@ export async function runStaging({ settings, canvas, roomType, style, isEmpty, o
     const out = await generateImage({
       apiKey: settings.apiKey,
       model: settings.imageModel,
-      prompt: buildStagingPrompt({ style, roomType, isEmpty, issues }),
-      images: [input],
+      prompt: keep.length
+        ? buildMatchStagingPrompt({ roomType, keepLabels: keep.map((o) => o.label), issues })
+        : buildStagingPrompt({ style, roomType, isEmpty, issues }),
+      images: [input, ...refs],
       aspectRatio,
       imageSize: settings.imageSize,
       signal,
     })
-    const staged = await base64ToCanvas(out, canvas.width, canvas.height)
+    let staged = await base64ToCanvas(out, canvas.width, canvas.height)
+    if (keepMask) staged = compositeWithMask(staged, canvas, keepMask)
     onStatus(`Checking architecture with ${settings.visionModel}`)
     let qa
     try {

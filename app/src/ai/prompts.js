@@ -223,6 +223,26 @@ export function buildStagingPrompt({ style, roomType, isEmpty = true, issues = [
   return lines.join('\n')
 }
 
+// Stage the room around furniture the seller keeps. The kept pieces are sent
+// as reference crops and pasted back afterwards, so they stay pixel-identical.
+export function buildMatchStagingPrompt({ roomType, keepLabels, issues = [] }) {
+  const roomLabel = (ROOM_TYPES.find((r) => r.id === roomType)?.label || 'room').toLowerCase()
+  const keep = describeItems(keepLabels)
+  const many = keepLabels.length > 1
+  const lines = [
+    `Virtually stage this ${roomLabel} around the furniture already in it: the ${keep}. ${many ? 'They are' : 'It is'} also shown on ${many ? 'their own' : 'its own'} in the reference image${many ? 's' : ''} after the room photo.`,
+    `Keep the ${keep} exactly as photographed, in the same position, fully visible and not blocked by anything new.`,
+    `Add the rest of the furniture and decor this room needs, chosen to match the ${keep}: same design style and era, compatible materials and finishes, and a color palette built around ${many ? 'them' : 'it'}, so the room looks designed around ${many ? 'these pieces' : 'this piece'}.`,
+    '',
+    PRESERVE,
+  ]
+  if (issues.length) {
+    lines.push('', 'A previous attempt changed the architecture. Fix these problems this time:')
+    for (const issue of issues.slice(0, 6)) lines.push(`- ${issue}`)
+  }
+  return lines.join('\n')
+}
+
 const EDIT_RULES =
   'Keep every other pixel identical: same framing, camera angle, perspective, lighting, and colors. Do not add, move, or remove anything else. Return only the edited Image 1, with no magenta highlight.'
 

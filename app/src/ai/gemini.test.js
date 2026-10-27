@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { API_BASE, GeminiError, extractImage, extractText, generateContent, isKeyError, listModels, parseJson } from './gemini.js'
 import { generateImage, segmentObjects, checkStructure } from './tasks.js'
-import { buildEditPrompt, buildPolishPrompt, buildStagingPrompt, STYLE_IDS, ROOM_TYPES } from './prompts.js'
+import { buildEditPrompt, buildMatchStagingPrompt, buildPolishPrompt, buildStagingPrompt, STYLE_IDS, ROOM_TYPES } from './prompts.js'
 
 const jsonResponse = (status, body) => ({ ok: status < 400, status, json: async () => body })
 const textResp = (text) => ({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] })
@@ -157,6 +157,14 @@ describe('prompts', () => {
 
   it('feeds QA issues back into the retry prompt', () => {
     expect(buildStagingPrompt({ style: 'modern', roomType: 'bedroom', issues: ['added a window'] })).toContain('- added a window')
+  })
+
+  it('match staging keeps the remaining piece and designs around it', () => {
+    const p = buildMatchStagingPrompt({ roomType: 'bedroom', keepLabels: ['accent chair'] })
+    expect(p).toContain('stage this bedroom around the furniture already in it: the accent chair')
+    expect(p).toContain('Keep the accent chair exactly as photographed')
+    expect(p).toContain('Strictly preserve the property')
+    expect(buildMatchStagingPrompt({ roomType: 'living-room', keepLabels: ['armchair', 'armchair'], issues: ['moved the window'] })).toContain('- moved the window')
   })
 
   it('polish asks for cleanup only, with no new objects', () => {

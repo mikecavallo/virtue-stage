@@ -42,6 +42,23 @@ export function canvasToBase64(canvas, { maxSide = 1536, mimeType = 'image/jpeg'
   return { data: url.slice(url.indexOf(',') + 1), mimeType, width, height }
 }
 
+// Crop an object's box (Gemini 0-1000 format) with some padding, for use as a
+// reference image.
+export function cropBox(canvas, box2d, pad = 0.06) {
+  const [ymin, xmin, ymax, xmax] = box2d
+  const w = canvas.width
+  const h = canvas.height
+  const px = ((xmax - xmin) / 1000) * w * pad
+  const py = ((ymax - ymin) / 1000) * h * pad
+  const x0 = Math.max(0, (xmin / 1000) * w - px)
+  const y0 = Math.max(0, (ymin / 1000) * h - py)
+  const x1 = Math.min(w, (xmax / 1000) * w + px)
+  const y1 = Math.min(h, (ymax / 1000) * h + py)
+  const out = createCanvas(x1 - x0, y1 - y0)
+  out.getContext('2d').drawImage(canvas, x0, y0, x1 - x0, y1 - y0, 0, 0, out.width, out.height)
+  return out
+}
+
 export async function base64ToCanvas({ data, mimeType }, width, height) {
   const img = await loadImage(`data:${mimeType};base64,${data}`)
   return imageToCanvas(img, width, height)

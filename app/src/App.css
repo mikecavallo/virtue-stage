@@ -1060,6 +1060,14 @@ select:focus {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.style-card--match {
+  gap: 0.2rem;
+  font-size: 0.86rem;
+}
+.style-card--match .small {
+  font-weight: 500;
+  text-transform: none;
+}
 .style-swatch {
   display: flex;
   height: 14px;

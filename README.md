@@ -20,6 +20,7 @@ VirtueStage is a static web app (no backend). Visitors without an API key get a 
 | **Multi-select** | Shift-click (or the Select multiple toggle on touch) to grab several objects; one model call removes them all, one recolor paints them all. |
 | **Polish** | Live removals already include cleanup in the same call (wider shadow margin, untouched neighbours masked out). Polish is an optional second pass over every edited area, and the way to clean up the demo's precomputed removals. |
 | **Recolor** | Runs locally in CIELAB space: swaps chroma, keeps the original lightness variation, so fabric still looks like fabric. Instant and free. |
+| **Match existing furniture** | Remove all but 1 to 3 pieces and the Stage tab offers to stage the room around them: the kept pieces go to the model as reference crops, and their pixels are pasted back afterwards so they stay exactly as photographed. |
 | **Stage** | Six style presets × six room types, with prompts that spend most of their words on what must not change. |
 | **Disclose** | Export stamps a "Virtually staged" or "Digitally altered" label (California AB 723), offers the original as a separate download, and writes a change log. |
 

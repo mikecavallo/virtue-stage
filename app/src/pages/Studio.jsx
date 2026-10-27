@@ -261,13 +261,14 @@ export default function Studio({ initialSample }) {
     )
   }
 
-  const onStage = async ({ style, isEmpty }) => {
+  const onStage = async ({ style, isEmpty, keep = [] }) => {
     const st = stateRef.current
     const cur = st.steps[st.cursor]
+    const label = keep.length ? `Staged around the ${describeItems(keep.map((o) => o.label))}` : `Staged: ${STYLES[style].label}`
     await runGenerative(
-      `Staging: ${STYLES[style].label}`,
-      (signal, onStatus) => runStaging({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), roomType: st.photo.roomType, style, isEmpty, onStatus, signal }),
-      (res) => ({ label: `Staged: ${STYLES[style].label}`, engine: settingsRef.current.imageModel, note: qaNote(res.qa), objects: [], scanned: false, op: { type: 'stage', style } }),
+      label,
+      (signal, onStatus) => runStaging({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), roomType: st.photo.roomType, style, isEmpty, keep, onStatus, signal }),
+      (res) => ({ label, engine: settingsRef.current.imageModel, note: qaNote(res.qa), objects: [], scanned: false, op: { type: 'stage', style } }),
       async (result) => {
         setTab('edit')
         await scanCanvas(result.canvas)
@@ -504,8 +505,10 @@ export default function Studio({ initialSample }) {
           )}
           {tab === 'stage' && (
             <StageTab
-              key={photo?.name}
+              key={`${photo?.name}-${step?.id}`}
               photo={photo}
+              objects={objects}
+              suggestMatch={regions.length > 0}
               live={live}
               busy={busy}
               onStage={onStage}
