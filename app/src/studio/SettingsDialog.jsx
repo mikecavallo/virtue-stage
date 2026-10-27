@@ -1,10 +1,12 @@
 import { useState } from 'react'
-import { KeyRound, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, KeyRound, ShieldCheck } from 'lucide-react'
 import Modal from '../components/Modal.jsx'
 import { IMAGE_MODEL_OPTIONS, VISION_MODEL_OPTIONS, listModels } from '../ai/gemini.js'
 
-export default function SettingsDialog({ settings, onSave, onClose }) {
-  const [draft, setDraft] = useState(settings)
+// `prompt` is set when a live request failed because of the key (expired,
+// invalid, no model access): { reason, clearKey, canRetry }.
+export default function SettingsDialog({ settings, onSave, onClose, prompt = null }) {
+  const [draft, setDraft] = useState(() => (prompt?.clearKey ? { ...settings, apiKey: '' } : settings))
   const [test, setTest] = useState(null)
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }))
 
@@ -25,21 +27,27 @@ export default function SettingsDialog({ settings, onSave, onClose }) {
 
   return (
     <Modal
-      title="Live AI settings"
+      title={prompt ? 'Gemini API key needed' : 'Live AI settings'}
       onClose={onClose}
       footer={
         <>
           {settings.apiKey && (
             <button className="btn btn--ghost" onClick={() => onSave({ ...draft, apiKey: '', remember: false })}>
-              Remove key
+              {prompt ? 'Use demo mode' : 'Remove key'}
             </button>
           )}
-          <button className="btn btn--primary" onClick={() => onSave({ ...draft, apiKey: draft.apiKey.trim() })}>
-            Save
+          <button className="btn btn--primary" disabled={Boolean(prompt) && !draft.apiKey.trim()} onClick={() => onSave({ ...draft, apiKey: draft.apiKey.trim() })}>
+            {prompt?.canRetry ? 'Save and retry' : 'Save'}
           </button>
         </>
       }
     >
+      {prompt && (
+        <div className="key-alert" role="alert">
+          <AlertTriangle size={16} />
+          <p>{prompt.reason}</p>
+        </div>
+      )}
       <p className="muted">
         Without a key the studio runs in demo mode on the sample photos. Add your own{' '}
         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">

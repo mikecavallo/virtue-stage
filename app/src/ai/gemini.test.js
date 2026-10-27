@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { API_BASE, GeminiError, extractImage, extractText, generateContent, parseJson } from './gemini.js'
+import { API_BASE, GeminiError, extractImage, extractText, generateContent, isKeyError, listModels, parseJson } from './gemini.js'
 import { generateImage, segmentObjects, checkStructure } from './tasks.js'
-import { buildEditPrompt, buildStagingPrompt, STYLE_IDS, ROOM_TYPES } from './prompts.js'
+import { buildEditPrompt, buildPolishPrompt, buildStagingPrompt, STYLE_IDS, ROOM_TYPES } from './prompts.js'
 
 const jsonResponse = (status, body) => ({ ok: status < 400, status, json: async () => body })
 const textResp = (text) => ({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] })
@@ -29,6 +29,41 @@ describe('generateContent', () => {
   ])('maps HTTP %s to a friendly error', async (status, body, code) => {
     const fetchImpl = async () => jsonResponse(status, body)
     await expect(generateContent({ apiKey: 'k', model: 'x', parts: [], fetchImpl })).rejects.toMatchObject({ code })
+  })
+
+  it('tells an expired key apart from an invalid one', async () => {
+    const expired = async () =>
+      jsonResponse(400, { error: { code: 400, message: 'API key expired. Please renew the API key.', status: 'INVALID_ARGUMENT', details: [{ reason: 'API_KEY_INVALID' }] } })
+    const err = await generateContent({ apiKey: 'k', model: 'x', parts: [], fetchImpl: expired }).catch((e) => e)
+    expect(err.code).toBe('expired_key')
+    expect(isKeyError(err)).toBe(true)
+    const unauth = async () => jsonResponse(401, { error: { message: 'Request had invalid authentication credentials.', status: 'UNAUTHENTICATED' } })
+    await expect(listModels({ apiKey: 'k', fetchImpl: unauth })).rejects.toMatchObject({ code: 'bad_key' })
+  })
+
+  it('only treats key problems as key errors', () => {
+    expect(isKeyError(new GeminiError('x', { code: 'quota' }))).toBe(false)
+    expect(isKeyError(new GeminiError('x', { code: 'forbidden' }))).toBe(true)
+    expect(isKeyError(new TypeError('network'))).toBe(false)
+  })
+
+  it('retries without a thinking level the model does not support', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(400, { error: { code: 400, message: 'Thinking level MINIMAL is not supported for this model.', status: 'INVALID_ARGUMENT' } }))
+      .mockResolvedValueOnce(jsonResponse(200, textResp('[]')))
+    const cfg = { responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'MINIMAL' } }
+    await generateContent({ apiKey: 'k', model: 'gemini-3.8-flash', parts: [{ text: 'x' }], generationConfig: cfg, fetchImpl })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    const retryBody = JSON.parse(fetchImpl.mock.calls[1][1].body)
+    expect(retryBody.generationConfig).toEqual({ responseMimeType: 'application/json' })
+    expect(cfg.thinkingConfig).toBeDefined() // caller's config is not mutated
+  })
+
+  it('does not loop when a 400 is unrelated to thinking', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(400, { error: { message: 'Invalid JSON payload received.' } }))
+    await expect(generateContent({ apiKey: 'k', model: 'm', parts: [], generationConfig: { thinkingConfig: { thinkingLevel: 'LOW' } }, fetchImpl })).rejects.toMatchObject({ code: 'request' })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
   it('surfaces safety blocks', async () => {
@@ -99,7 +134,7 @@ describe('tasks', () => {
     expect(objs[0].children).toEqual(['throw-pillow-1'])
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body)
     expect(body.generationConfig.responseMimeType).toBe('application/json')
-    expect(body.generationConfig.thinkingConfig.thinkingLevel).toBe('MINIMAL')
+    expect(body.generationConfig.thinkingConfig.thinkingLevel).toBe('LOW')
   })
 
   it('checkStructure treats any listed issue as a failure', async () => {
@@ -122,6 +157,13 @@ describe('prompts', () => {
 
   it('feeds QA issues back into the retry prompt', () => {
     expect(buildStagingPrompt({ style: 'modern', roomType: 'bedroom', issues: ['added a window'] })).toContain('- added a window')
+  })
+
+  it('polish asks for cleanup only, with no new objects', () => {
+    const p = buildPolishPrompt()
+    expect(p).toContain('ghost shadows')
+    expect(p).toContain('Do not add any objects')
+    expect(p).toContain('Do not change anything outside the highlighted areas')
   })
 
   it('mentions children when removing a parent object', () => {

@@ -244,6 +244,19 @@ export function buildEditPrompt({ action, label, childLabels = [], instruction =
   return `${EDIT_PREAMBLE}\n\n${task}\n\n${EDIT_RULES}`
 }
 
+// Cleanup pass after removals/replacements. Paired with a mask, so the model's
+// output is only used in (and just around) the areas that were edited.
+export function buildPolishPrompt() {
+  return [
+    'You are a professional real estate photo retoucher. Image 1 is the photo to fix. Image 2 is the same photo with the retouched areas highlighted in magenta.',
+    '',
+    'Furniture was digitally removed or changed in the highlighted areas, and the edit left defects: leftover or ghost shadows, dark smudges and blotches, faint outlines of the old objects, blurry or smeared patches, repeated textures, and visible seams.',
+    'Clean up those areas so the photo looks untouched and professionally shot: continue the surrounding floor, rug, walls, baseboards, outlets, and light naturally, matching the existing grain, sharpness, and exposure.',
+    '',
+    'Do not add any objects or furniture. Do not change anything outside the highlighted areas: same framing, perspective, colors, and lighting. Return only the cleaned Image 1, with no magenta.',
+  ].join('\n')
+}
+
 export const ROOM_DETECT_PROMPT = `Classify this real estate photo.
 Return JSON with:
 - roomType: one of ${ROOM_TYPES.map((r) => r.id).join(', ')} (pick the closest)

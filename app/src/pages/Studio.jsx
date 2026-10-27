@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { Download, FlaskConical, Upload, Zap, Columns2, Undo2, Redo2 } from 'lucide-react'
+import { Download, FlaskConical, Upload, Zap, Columns2, Undo2, Redo2, Sparkles } from 'lucide-react'
 import { Wordmark } from '../components/Logo.jsx'
 import Editor from '../studio/Editor.jsx'
 import { EditTab, HistoryTab, StageTab } from '../studio/Inspector.jsx'
 import SettingsDialog from '../studio/SettingsDialog.jsx'
 import ExportDialog from '../studio/ExportDialog.jsx'
-import { initialState, reducer, renderOps, replayBaseIndex, withoutRemoved, disclosureText, changeLog } from '../studio/history.js'
+import { initialState, reducer, renderOps, replayBaseIndex, withoutRemoved, disclosureText, changeLog, editedRegions, polishProtect } from '../studio/history.js'
 import { SAMPLES, sampleBase, sampleImage, loadInventory } from '../lib/samples.js'
 import { loadSettings, saveSettings } from '../lib/settings.js'
 import { canvasToBase64, canvasToBlob, imageToCanvas, loadImage, stampDisclosure } from '../lib/canvas.js'
-import { fitWithin, slugify } from '../lib/geometry.js'
+import { fitWithin, slugify, withDescendants } from '../lib/geometry.js'
 import { detectRoom, segmentObjects } from '../ai/tasks.js'
-import { runObjectEdit, runStaging } from '../ai/pipeline.js'
+import { runObjectEdit, runPolish, runStaging } from '../ai/pipeline.js'
 import { STYLES } from '../ai/prompts.js'
+import { GeminiError, isKeyError, listModels } from '../ai/gemini.js'
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 let stepCounter = 0
@@ -43,6 +44,8 @@ export default function Studio({ initialSample }) {
   const [dialog, setDialog] = useState(null)
   const [compare, setCompare] = useState(false)
   const [showOutlines, setShowOutlines] = useState(true)
+  const [keyPrompt, setKeyPrompt] = useState(null)
+  const retryRef = useRef(null)
 
   const canvases = useRef(new Map())
   const objectUrls = useRef([])
@@ -60,6 +63,7 @@ export default function Studio({ initialSample }) {
   const objects = step?.objects || []
   const selected = objects.find((o) => o.id === state.selectedId) || null
   const busy = Boolean(state.busy)
+  const regions = editedRegions(steps, cursor)
 
   const resetPhoto = () => {
     abortRef.current?.abort()
@@ -141,7 +145,7 @@ export default function Studio({ initialSample }) {
       dispatch({ type: 'set-objects', objects: objs.value })
       dispatch({ type: 'idle' })
     } else {
-      dispatch({ type: 'error', message: objs.reason?.message || 'Scan failed' })
+      failAi(objs.reason || new Error('Scan failed'), () => scanCanvas(canvas, { withRoom }))
     }
   }
 
@@ -172,7 +176,18 @@ export default function Studio({ initialSample }) {
     }
   }
 
-  const runGenerative = async (busyLabel, work, describe) => {
+  // A key problem (expired, invalid, no model access) opens the key prompt
+  // instead of a dead-end error. Saving a new key retries the failed action.
+  const failAi = (error, retry) => {
+    if (!isKeyError(error)) return dispatch({ type: 'error', message: error.message })
+    retryRef.current = retry || null
+    dispatch({ type: 'idle' })
+    setKeyPrompt({ reason: error.message, clearKey: error.code === 'bad_key' || error.code === 'expired_key', canRetry: Boolean(retry) })
+    setDialog('settings')
+  }
+
+  // Settings are read at run time (not captured), so a retry uses the new key.
+  const runGenerative = async (busyLabel, work, describe, after) => {
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
@@ -181,11 +196,10 @@ export default function Studio({ initialSample }) {
       const result = await work(ac.signal, (label) => dispatch({ type: 'busy', label }))
       const next = await makeStep(result.canvas, describe(result))
       dispatch({ type: 'push', step: next })
-      return { result, step: next }
+      if (after) await after(result, next)
     } catch (e) {
       if (e?.name === 'AbortError') dispatch({ type: 'idle' })
-      else dispatch({ type: 'error', message: e.message })
-      return null
+      else failAi(e, () => runGenerative(busyLabel, work, describe, after))
     }
   }
 
@@ -220,20 +234,21 @@ export default function Studio({ initialSample }) {
       return applyReplayable({ type: 'recolor', objectId: obj.id, hex: value }, `Recolored ${obj.label} ${String(name).toLowerCase()}`, 'in-browser recolor')
     }
     if (action === 'remove' && !settingsRef.current.apiKey) {
-      return applyReplayable({ type: 'demo-remove', objectId: obj.id }, `Removed ${obj.label}`, 'LaMa, precomputed')
+      const polygons = withDescendants(cur.objects, obj.id).map((o) => o.mask)
+      return applyReplayable({ type: 'demo-remove', objectId: obj.id, polygons }, `Removed ${obj.label}`, 'LaMa, precomputed')
     }
-    const s = settingsRef.current
     const verb = { remove: 'Removing', restyle: 'Restyling', replace: 'Replacing' }[action]
     await runGenerative(
       `${verb} the ${obj.label}`,
-      (signal, onStatus) => runObjectEdit({ settings: s, canvas: canvases.current.get(cur.id), objects: cur.objects, object: obj, action, instruction: value, onStatus, signal }),
+      (signal, onStatus) =>
+        runObjectEdit({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), objects: cur.objects, object: obj, action, instruction: value, onStatus, signal }),
       (res) => ({
         label: action === 'remove' ? `Removed ${obj.label}` : action === 'restyle' ? `Restyled ${obj.label}: ${value}` : `Replaced ${obj.label} with ${value}`,
-        engine: s.imageModel,
+        engine: settingsRef.current.imageModel,
         note: res.attempts > 1 ? 'regenerated once (model shifted the photo)' : '',
         objects: action === 'replace' ? cur.objects.map((o) => (o.id === obj.id ? { ...o, label: value.replace(/^an? /, '') } : o)) : withoutRemoved(cur.objects, res.removedIds),
         scanned: cur.scanned,
-        op: { type: action },
+        op: { type: action, polygons: res.polygons },
       }),
     )
   }
@@ -241,16 +256,38 @@ export default function Studio({ initialSample }) {
   const onStage = async ({ style, isEmpty }) => {
     const st = stateRef.current
     const cur = st.steps[st.cursor]
-    const s = settingsRef.current
-    const done = await runGenerative(
+    await runGenerative(
       `Staging: ${STYLES[style].label}`,
-      (signal, onStatus) => runStaging({ settings: s, canvas: canvases.current.get(cur.id), roomType: st.photo.roomType, style, isEmpty, onStatus, signal }),
-      (res) => ({ label: `Staged: ${STYLES[style].label}`, engine: s.imageModel, note: qaNote(res.qa), objects: [], scanned: false, op: { type: 'stage', style } }),
+      (signal, onStatus) => runStaging({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), roomType: st.photo.roomType, style, isEmpty, onStatus, signal }),
+      (res) => ({ label: `Staged: ${STYLES[style].label}`, engine: settingsRef.current.imageModel, note: qaNote(res.qa), objects: [], scanned: false, op: { type: 'stage', style } }),
+      async (result) => {
+        setTab('edit')
+        await scanCanvas(result.canvas)
+      },
     )
-    if (done) {
-      setTab('edit')
-      await scanCanvas(done.result.canvas)
+  }
+
+  const onPolish = async () => {
+    if (!settingsRef.current.apiKey) {
+      return failAi(new GeminiError('Polish sends your edited areas to Gemini for cleanup. Add your key to use it.', { code: 'no_key' }), onPolish)
     }
+    const st = stateRef.current
+    const cur = st.steps[st.cursor]
+    const polygons = editedRegions(st.steps, st.cursor)
+    if (!polygons.length) return
+    const protect = polishProtect(cur.objects, polygons)
+    await runGenerative(
+      'Polishing edits',
+      (signal, onStatus) => runPolish({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), polygons, protect, onStatus, signal }),
+      (res) => ({
+        label: 'Polished the edited areas',
+        engine: settingsRef.current.imageModel,
+        note: res.attempts > 1 ? 'regenerated once (model shifted the photo)' : 'cleanup pasted back inside edited areas',
+        objects: cur.objects,
+        scanned: cur.scanned,
+        op: { type: 'polish' },
+      }),
+    )
   }
 
   const onSelect = (id) => {
@@ -297,8 +334,34 @@ export default function Studio({ initialSample }) {
   const saveAndClose = (next) => {
     saveSettings(next)
     setSettings(next)
+    settingsRef.current = next
+    setDialog(null)
+    setKeyPrompt(null)
+    const retry = retryRef.current
+    retryRef.current = null
+    if (retry && next.apiKey) retry()
+  }
+
+  const closeDialog = () => {
+    if (keyPrompt && retryRef.current) dispatch({ type: 'error', message: 'Live AI is paused until a working Gemini key is added.' })
+    retryRef.current = null
+    setKeyPrompt(null)
     setDialog(null)
   }
+
+  // Catch an expired or revoked key on arrival, before the user spends time on an edit.
+  // Listing models is free, and network failures here are ignored.
+  useEffect(() => {
+    const key = settingsRef.current.apiKey
+    if (!key) return
+    const ac = new AbortController()
+    listModels({ apiKey: key, signal: ac.signal }).catch((e) => {
+      if (!isKeyError(e)) return
+      setKeyPrompt({ reason: e.message, clearKey: e.code !== 'forbidden', canRetry: false })
+      setDialog('settings')
+    })
+    return () => ac.abort()
+  }, [])
 
   return (
     <div className="studio">
@@ -372,6 +435,14 @@ export default function Studio({ initialSample }) {
             <button className={`btn btn--ghost btn--sm ${compare ? 'is-on' : ''}`} disabled={cursor < 1} onClick={() => setCompare((c) => !c)}>
               <Columns2 size={15} /> {compare ? 'Back to editing' : 'Compare'}
             </button>
+            <button
+              className="btn btn--outline btn--sm polish-btn"
+              disabled={busy || !regions.length}
+              onClick={onPolish}
+              title={regions.length ? 'Clean up leftover shadows, smudges, and outlines around your edits' : 'Remove or replace something first'}
+            >
+              <Sparkles size={15} /> Polish
+            </button>
             <span className="spacer" />
             <button className="icon-btn" disabled={busy || cursor <= 0} onClick={() => goto(cursor - 1)} aria-label="Undo">
               <Undo2 size={17} />
@@ -433,7 +504,9 @@ export default function Studio({ initialSample }) {
         </div>
       )}
 
-      {dialog === 'settings' && <SettingsDialog settings={settings} onSave={saveAndClose} onClose={() => setDialog(null)} />}
+      {dialog === 'settings' && (
+        <SettingsDialog key={keyPrompt ? 'key-prompt' : 'settings'} settings={settings} prompt={keyPrompt} onSave={saveAndClose} onClose={closeDialog} />
+      )}
       {dialog === 'export' && (
         <ExportDialog
           disclosure={disclosureText(steps, cursor)}

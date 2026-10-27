@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { changeLog, disclosureText, initialState, reducer, replayBaseIndex, withoutRemoved } from './history.js'
+import { changeLog, disclosureText, editedRegions, polishProtect, initialState, reducer, replayBaseIndex, withoutRemoved } from './history.js'
 
 const step = (id, op, extra = {}) => ({ id, url: `${id}.jpg`, label: id, objects: [], op, ...extra })
 
@@ -70,5 +70,41 @@ describe('disclosure', () => {
     const log = changeLog({ name: 'Living room' }, steps, 2)
     expect(log).toContain('1. Recolored sofa navy [in-browser recolor]')
     expect(log).toContain('2. Staged: Scandinavian (architecture check passed)')
+  })
+})
+
+describe('editedRegions (what Polish cleans up)', () => {
+  const A = [[0, 0], [10, 0], [10, 10]]
+  const B = [[20, 20], [30, 20], [30, 30]]
+  const C = [[40, 40], [50, 40], [50, 50]]
+
+  it('collects edited polygons since the last whole-photo change, skipping recolors', () => {
+    const steps = [
+      step('o', { type: 'original' }),
+      step('r', { type: 'remove', polygons: [A] }),
+      step('s', { type: 'stage' }),
+      step('d', { type: 'demo-remove', objectId: 'x', polygons: [B] }),
+      step('c', { type: 'recolor', objectId: 'y', hex: '#000000' }),
+      step('p', { type: 'polish' }),
+      step('q', { type: 'rescan', after: { type: 'replace', polygons: [C] } }),
+    ]
+    expect(editedRegions(steps, 6)).toEqual([C, B])
+    expect(editedRegions(steps, 1)).toEqual([A])
+    expect(editedRegions(steps, 2)).toEqual([])
+    expect(editedRegions(steps, 0)).toEqual([])
+  })
+})
+
+describe('polishProtect', () => {
+  it('protects untouched objects but not rugs or the edited object itself', () => {
+    const sofa = [[1, 1], [2, 1], [2, 2]]
+    const art = [[5, 5], [6, 5], [6, 6]]
+    const rug = [[0, 9], [9, 9], [9, 0]]
+    const objects = [
+      { id: 'sofa-1', label: 'mid-century sofa', mask: sofa },
+      { id: 'wall-art-1', label: 'wall art', mask: art },
+      { id: 'area-rug-1', label: 'area rug', mask: rug },
+    ]
+    expect(polishProtect(objects, [JSON.parse(JSON.stringify(sofa))])).toEqual([art])
   })
 })

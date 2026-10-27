@@ -18,7 +18,9 @@ export default function Modal({ title, onClose, children, footer }) {
       }
     }
     window.addEventListener('keydown', onKey, true)
-    ref.current?.querySelector('input, select, button, textarea')?.focus()
+    // Focus the first field (e.g. the key input), not the close button.
+    const el = ref.current
+    ;(el?.querySelector('input, select, textarea') || el?.querySelector('button'))?.focus()
     return () => window.removeEventListener('keydown', onKey, true)
   }, [])
 

@@ -107,6 +107,29 @@ export async function renderOps({ base, objects, ops, patchBaseUrl, sourceWidth,
   return { canvas, removed }
 }
 
+const REGION_OPS = new Set(['remove', 'demo-remove', 'replace', 'restyle'])
+
+// Polygons of every object edit since the last whole-photo change (original
+// photo or staging). These are the areas "Polish" cleans up.
+export function editedRegions(steps, cursor) {
+  const polygons = []
+  for (let i = cursor; i > 0; i--) {
+    const raw = steps[i]?.op || {}
+    if (raw.type === 'stage' || raw.type === 'original') break
+    const op = raw.type === 'rescan' ? raw.after || {} : raw
+    if (REGION_OPS.has(op.type) && Array.isArray(op.polygons)) polygons.push(...op.polygons)
+  }
+  return polygons
+}
+
+// Untouched objects whose pixels Polish must not change. Floor coverings stay
+// cleanable, because removed furniture leaves its shadow on the rug.
+const FLOOR_COVERING_RE = /rug|carpet|runner|\bmat\b/
+export function polishProtect(objects, regions) {
+  const edited = new Set(regions.map((p) => JSON.stringify(p)))
+  return objects.filter((o) => !edited.has(JSON.stringify(o.mask)) && !FLOOR_COVERING_RE.test(o.label)).map((o) => o.mask)
+}
+
 export function withoutRemoved(objects, removedIds) {
   const gone = new Set(removedIds)
   return objects
