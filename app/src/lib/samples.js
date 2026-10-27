@@ -5,9 +5,9 @@ export const BASE = import.meta.env.BASE_URL
 export const SAMPLES = [
   { id: 'living-room', title: 'Living room', roomType: 'living-room' },
   { id: 'bedroom', title: 'Bedroom', roomType: 'bedroom' },
-  { id: 'dining-room', title: 'Dining room', roomType: 'dining-room' },
-  { id: 'kitchen', title: 'Kitchen', roomType: 'kitchen' },
+  { id: 'open-plan', title: 'Open-plan', roomType: 'living-room' },
   { id: 'bathroom', title: 'Bathroom', roomType: 'bathroom' },
+  { id: 'kitchen', title: 'Kitchen', roomType: 'kitchen' },
 ]
 
 export const sampleBase = (id) => `${BASE}samples/${id}/`

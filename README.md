@@ -4,7 +4,9 @@
 
 Live demo: **https://mikecavallo.github.io/virtue-stage/**
 
-![VirtueStage studio: a living room with every movable object outlined and an armchair selected](docs/studio.png)
+![VirtueStage studio: a living room with every movable object outlined and an armchair selected](docs/studio.jpg)
+
+![Original photo next to the edited one: one armchair recolored navy, the other armchair and the side table with its lamp removed](docs/before-after.jpg)
 
 VirtueStage is a static web app (no backend). Visitors without an API key get a demo on five sample photos. Visitors who paste their own Gemini API key can scan, edit, and stage any photo; requests go straight from their browser to Google.
 
@@ -33,7 +35,7 @@ So the model never gets the final say over the whole frame:
 
 | | Demo (no key) | Live (your Gemini key) |
 |---|---|---|
-| Photos | 5 samples | Samples or your own upload |
+| Photos | 5 samples (one with a full declutter) | Samples or your own upload |
 | Object outlines | Precomputed offline with Grounding DINO + SAM | Gemini 3.8 Flash |
 | Remove | Precomputed with LaMa | Nano Banana 2.1 + mask paste-back |
 | Recolor | In-browser | In-browser |

@@ -8,16 +8,18 @@ For every sample photo in app/public/samples/<id>/original.jpg this writes:
   declutter.jpg       (optional) the room with all movable furniture removed
 
 Pipeline: Grounding DINO (open-vocabulary boxes) -> SAM ViT-H (box-prompted
-masks) -> mask cleanup -> big-LaMa inpainting on a context crop around each
-object. See README.md for details, model IDs and licenses.
+masks) -> mask cleanup -> big-LaMa inpainting into shared "clean plates", so
+patches compose in any removal order (see Removal / build_plate and README.md
+for details, model IDs and licenses).
 
 The object list for each photo is curated in SPECS below: each object has a
 Grounding DINO phrase plus a hand-placed hint box that selects which detection
 to keep (and is used as the SAM prompt only if DINO misses the object).
 
 Usage:
-  python generate.py --work /path/to/scratch [--samples living-room bedroom]
-                     [--stages detect,segment,remove,write,verify]
+  python generate.py --work /path/to/scratch [--samples living-room open-plan]
+                     [--stages detect,segment,remove,declutter,write,verify]
+                     [--stages candidates]   # DINO overlays for placing hint boxes
 """
 from __future__ import annotations
 
@@ -47,7 +49,7 @@ LAMA_REPO, LAMA_REV, LAMA_FILE = "okaris/big-lama", "a77c4957376bb29a47a33392834
 LAMA_MD5 = "e3aa4aaa15225a33ec84f9f4bc47e500"
 
 SOURCE = "Precomputed offline with Grounding DINO + SAM (segmentation) and LaMa (removal)"
-ROOM_TYPES = {"living-room", "bedroom", "kitchen", "dining-room", "bathroom"}
+ROOM_TYPES = {"living-room", "bedroom", "kitchen", "dining-room", "bathroom", "office"}
 
 
 # ----------------------------------------------------------------------------
@@ -55,15 +57,20 @@ ROOM_TYPES = {"living-room", "bedroom", "kitchen", "dining-room", "bathroom"}
 #   id        "<label-slug>-<n>"; the label is derived from it ("throw-pillow-1" -> "throw pillow")
 #   prompt    Grounding DINO phrase used to find it
 #   hint      rough (x0, y0, x1, y1) box that picks the matching detection
-#   children  ids of listed objects resting on it (removed together with it)
+#   children  ids of listed objects removed together with it: things resting on it, and
+#             things standing in front of it (an occluder is its occludee's child, so removing
+#             the occluder alone continues the object behind it and every order composes)
 #   attach    unlisted bits removed together with it: dicts with prompt/hint (+ SAM options)
 #   points    extra SAM clicks [(x, y, 1=include | 0=exclude), ...]
 #   mask      which of SAM's 3 multimask outputs to use ("best" = highest predicted IoU)
 #   box       "det" (default: DINO box, hint as fallback) or "hint" (force the hint box)
+#   parts     extra prompts whose masks are merged into this object's own mask (e.g. headboard)
 #   subtract  ids whose masks are removed from this one (overlap cleanup)
-#   surface   True for rugs: other objects' removals may repaint over it
-#   halo/bottom/sigma/ctx/max_side  removal tuning (see removal_masks / inpaint_region)
-# "extra" entries are not listed in the inventory but are removed in declutter.jpg.
+#   extent    "hull": a child's removal continues this parent over its convex hull (rugs)
+#   halo/bottom/sigma  removal alpha tuning in px at 1200 px width (see Removal._feather)
+# "extra" entries are not tappable: they stay as protected background in every patch and are
+# removed only in declutter.jpg. declutter=dict(publish=True) writes declutter.jpg (after
+# review of the candidate); declutter=dict() only renders a candidate in the work dir.
 # ----------------------------------------------------------------------------
 def O(oid, prompt, hint, **kw):
     return dict(id=oid, prompt=prompt, hint=hint, **kw)
@@ -84,104 +91,147 @@ SPECS: dict = {
             O("throw-pillow-2", "pillow", (510, 429, 594, 508)),
             O("side-table-1", "side table", (298, 457, 455, 610), children=["table-lamp-1"]),
             O("table-lamp-1", "table lamp", (360, 323, 443, 474)),
-            O("dining-chair-1", "dining chair", (1024, 404, 1200, 709), points=[(1125, 610, 0)]),
-            O("dining-chair-2", "dining chair", (901, 383, 1036, 597)),
-            O("dining-chair-3", "dining chair", (938, 375, 1028, 487)),
-            O("potted-plant-1", "potted plant", (900, 285, 968, 392)),
+            # The four chairs and the round table are one tappable set. Chairs hide most of the
+            # table and each other, so a single chair cannot be removed believably on its own.
+            O("dining-set-1", "dining chair", (1024, 404, 1200, 709), points=[(1125, 610, 0)],
+              parts=[X("dining chair", (901, 383, 1036, 597)),
+                     X("dining chair", (938, 375, 1028, 487)),
+                     X("dining chair", (1108, 376, 1200, 429)),
+                     X("dining table", (972, 418, 1036, 570), box="hint"),
+                     X("table leg", (1108, 585, 1145, 632), box="hint")]),
             O("wall-art-1", "framed picture", (775, 278, 838, 320)),
             O("wall-art-2", "framed picture", (1040, 295, 1147, 343)),
         ],
-        extra=[
+        extra=[  # background furniture, removed only in declutter.jpg
+            X("potted plant", (900, 285, 968, 392)),
             X("sofa", (989, 362, 1146, 423)),
             X("armchair", (719, 370, 794, 453)),
             X("potted plant", (720, 395, 770, 460)),
             X("coffee table", (850, 406, 913, 470)),
-            X("rug", (796, 434, 919, 489), surface=True),
+            X("rug", (796, 434, 919, 489)),
             X("table lamp", (954, 340, 986, 377)),
             X("table lamp", (1128, 343, 1188, 380)),
-            X("dining table", (976, 415, 1200, 630)),
-            X("dining chair", (1108, 376, 1200, 429)),
+            X("vase", (752, 296, 776, 330), box="hint"),
         ],
         declutter=dict(),
     ),
-    # NOTE: despite the folder name this photo is an open-plan living room (leather sofa).
-    "bedroom": dict(
+    # Open-plan living room (leather sofa).
+    # The sofa itself is not removable: LaMa cannot invent the kitchen behind it (every setting
+    # tried gives a grey slab), so it stays as protected background, and so do the knit
+    # blanket over its arm and the left pillow pair (grey smears). The sideboard is background too, so removing the
+    # fig in front of it continues the sideboard instead of biting a hole in it.
+    "open-plan": dict(
         title="Open-plan living room", roomType="living-room",
         objects=[
-            O("sofa-1", "sofa", (193, 463, 776, 745),
-              children=["throw-pillow-1", "throw-pillow-2", "throw-blanket-1"]),
-            O("throw-pillow-1", "pillow", (270, 478, 415, 588)),
-            O("throw-pillow-2", "pillow", (616, 460, 705, 543)),
-            O("throw-blanket-1", "blanket", (183, 505, 320, 650)),
-            O("armchair-1", "armchair", (951, 466, 1200, 712), children=["throw-pillow-3"]),
-            O("throw-pillow-3", "pillow", (1029, 466, 1173, 584)),
+            # the patterned pillow goes together with the white pillow stacked behind it; with
+            # the white pillow left as context LaMa copies its pattern into the hole
+            O("throw-pillow-1", "pillow", (616, 460, 705, 543),
+              attach=[X("pillow", (595, 462, 628, 542), box="hint")]),
+            O("armchair-1", "armchair", (951, 466, 1200, 712), children=["throw-pillow-2"],
+              attach=[X("pillow", (1155, 466, 1200, 584), box="hint")]),
+            O("throw-pillow-2", "pillow", (1029, 466, 1173, 584)),
             O("side-table-1", "side table", (745, 514, 806, 632)),
             O("potted-plant-1", "potted plant", (830, 428, 945, 590)),
-            O("potted-plant-2", "potted plant", (700, 440, 755, 495)),
-            O("sideboard-1", "sideboard", (757, 468, 850, 585)),
             O("mirror-1", "round mirror", (800, 315, 878, 412)),
             O("wall-art-1", "wall hanging", (681, 198, 730, 452)),
         ],
         extra=[
-            X("potted plant", (0, 400, 185, 745)),
-            X("side table", (54, 539, 192, 756)),
+            X("sofa", (193, 463, 776, 745)),
+            X("blanket", (183, 505, 320, 650)),
+            # the left pillow pair: LaMa fills it with a grey-brown block whatever the settings
+            X("pillow", (270, 478, 415, 588), points=[(395, 500, 0)],
+              parts=[X("pillow", (272, 466, 412, 556), box="hint",
+                       points=[(300, 480, 1), (395, 505, 1), (316, 476, 1), (290, 474, 1)])]),
+            # snake plant behind the sofa (0.2 % of the image) hides the bottom of the wall hanging
+            X("potted plant", (700, 440, 755, 495)),
+            X("sideboard", (757, 468, 850, 585)),
+            X("vase", (774, 438, 800, 472), box="hint"),
+            X("picture frame", (794, 443, 820, 472), box="hint"),
+            X("potted plant", (0, 400, 265, 790), parts=[X("basket", (0, 695, 35, 790), box="hint")]),
+            X("side table", (50, 543, 192, 570), box="hint"),
+            X("lamp", (48, 432, 140, 492), box="hint"),
+            X("planter", (138, 460, 185, 525), box="hint"),
+            X("pot", (66, 510, 120, 560), box="hint"),
+            X("plates", (115, 533, 160, 556), box="hint"),
             X("chair", (1, 638, 287, 799)),
+            X("dining table", (175, 466, 320, 500), box="hint"),
+            X("hat", (1022, 312, 1053, 357), box="hint"),
+            X("potted plant", (1165, 448, 1200, 476), box="hint"),
         ],
-        declutter=dict(),
     ),
     # NOTE: two people cooking dominate this photo; only cookware/decor is tappable.
     "kitchen": dict(
         title="Kitchen", roomType="kitchen",
         objects=[
-            O("dutch-oven-1", "dutch oven", (30, 168, 145, 232)),
-            O("dutch-oven-2", "dutch oven", (33, 490, 158, 560)),
-            O("stock-pot-1", "pot", (505, 578, 710, 750)),
-            O("saucepan-1", "saucepan", (252, 618, 412, 732)),
-            O("bell-peppers-1", "bell pepper", (108, 703, 210, 797)),
-            O("avocado-1", "avocado", (60, 735, 118, 795)),
+            O("dutch-oven-1", "dutch oven", (30, 168, 145, 232), box="hint"),
+            O("dutch-oven-2", "dutch oven", (33, 490, 158, 560), box="hint"),
+            # the pepper mills stand in front of the pot: removing one alone continues the pot
+            # behind it; removing the pot takes them along (see "Occlusion" in README)
+            O("stock-pot-1", "pot", (505, 578, 710, 750), children=["pepper-mill-1", "pepper-mill-2"]),
             O("pepper-mill-1", "pepper mill", (575, 705, 635, 800)),
             O("pepper-mill-2", "pepper mill", (650, 710, 712, 800)),
-            O("plates-1", "plates", (45, 350, 125, 373)),
-            O("casserole-dish-1", "casserole dish", (700, 232, 778, 268)),
-            O("potted-plant-1", "potted plant", (652, 210, 705, 262)),
+            O("saucepan-1", "saucepan", (252, 618, 412, 732)),
+            O("bell-peppers-1", "bell pepper", (108, 703, 210, 797)),
             O("dining-table-1", "dining table", (1050, 550, 1200, 800)),
         ],
+        extra=[  # too small to tap (< 0.3 %) and overlapping their neighbours: kept as background
+            X("avocado", (60, 735, 118, 795)),
+            X("casserole dish", (700, 232, 778, 268)),
+            X("potted plant", (652, 210, 705, 262)),
+        ],
     ),
-    # NOTE: despite the folder name this photo is a bedroom.
-    "dining-room": dict(
+    "bedroom": dict(
         title="Bedroom", roomType="bedroom",
         objects=[
-            O("bed-1", "bed", (231, 394, 874, 798), children=["throw-pillow-1", "throw-pillow-2"]),
-            O("throw-pillow-1", "pillow", (451, 418, 550, 485)),
+            # table-lamp-2 stands on a nightstand hidden behind the bed, and nightstand-1 stands in
+            # front of the bed's left side: both go with the bed (see "Occlusion" in README)
+            O("bed-1", "bed", (231, 394, 874, 798),
+              children=["throw-pillow-1", "throw-pillow-2", "table-lamp-2", "nightstand-1"],
+              parts=[X("headboard", (233, 393, 505, 535)),
+                     X("pillow", (283, 397, 401, 442), box="hint"),
+                     X("pillow", (283, 423, 455, 522)),
+                     X("pillow", (416, 397, 503, 430), box="hint"),
+                     X("pillow", (536, 415, 572, 488), box="hint")]),
+            O("throw-pillow-1", "pillow", (451, 418, 550, 485), points=[(558, 455, 0)]),
             O("throw-pillow-2", "pillow", (392, 439, 542, 504)),
             O("nightstand-1", "nightstand", (77, 535, 280, 737), children=["table-lamp-1"],
-              attach=[X("ball", (215, 508, 253, 540)), X("book", (195, 530, 275, 555))]),
+              attach=[X("ball", (215, 508, 253, 540), box="hint"), X("book", (195, 530, 275, 555))]),
             O("table-lamp-1", "table lamp", (116, 393, 236, 552)),
             O("table-lamp-2", "table lamp", (516, 395, 574, 483)),
-            O("wall-art-1", "framed picture", (290, 239, 446, 377)),
+            O("wall-art-1", "framed picture", (290, 239, 446, 377), halo=12),
             O("accent-chair-1", "chair", (875, 469, 1149, 705), children=["throw-pillow-3"]),
             O("throw-pillow-3", "pillow", (973, 466, 1089, 565)),
-            O("side-table-1", "side table", (1011, 530, 1199, 767), children=["vase-1"],
-              attach=[X("books", (1049, 548, 1148, 578))]),
-            O("vase-1", "vase of flowers", (1052, 505, 1135, 562)),
-            O("area-rug-1", "rug", (198, 608, 1176, 799), surface=True),
+            # the bed, chair and side table stand on the rug, so they go with it (keeps patches composable)
+            O("area-rug-1", "rug", (198, 608, 1176, 799), children=["bed-1", "accent-chair-1"],
+              extent="hull"),
+        ],
+        # The side table stands in front of the chair; removing it (or the vase) alone would
+        # have to reconstruct the chair back behind it, which LaMa fills with wall. They stay as
+        # background, so removing the chair leaves the table standing in front.
+        extra=[
+            X("side table", (1011, 530, 1199, 767), mask=2),
+            X("vase of flowers", (1052, 505, 1135, 562)),
+            X("books", (1049, 548, 1148, 578)),
         ],
         declutter=dict(),
     ),
     "bathroom": dict(
         title="Bathroom", roomType="bathroom",
         objects=[
-            O("potted-plant-1", "potted plant", (0, 1155, 325, 1680)),
+            O("potted-plant-1", "potted plant", (0, 1155, 325, 1680),
+              parts=[X("flower pot", (84, 1522, 240, 1682), box="hint")]),
             O("step-stool-1", "step stool", (392, 1341, 642, 1705)),
             O("mirror-1", "mirror", (200, 668, 432, 976)),
             O("potted-plant-2", "plant in basket", (488, 930, 640, 1118)),
-            O("hanging-plant-1", "hanging plant", (600, 925, 715, 1262)),
+            O("hanging-plant-1", "hanging plant", (600, 925, 715, 1262),
+              parts=[X("hook", (628, 924, 668, 1004), box="hint")]),
             O("hanging-plant-2", "hanging plant", (995, 275, 1200, 750)),
             O("planter-1", "bowl", (698, 1058, 752, 1112)),
             O("waste-bin-1", "trash can", (772, 1438, 865, 1500)),
-            O("jar-1", "jar", (920, 1400, 985, 1525)),
+            O("jar-1", "jar", (920, 1400, 985, 1525), box="hint",
+              parts=[X("toothbrush", (955, 1330, 988, 1425), box="hint")]),
         ],
-        declutter=dict(),
+        declutter=dict(publish=True),
     ),
 }
 
@@ -251,7 +301,7 @@ def nodes_for(spec):
             nid = f"{o['id']}~{i}"
             nodes[nid] = dict(a, id=nid, kind="attach", parent=o["id"])
     for i, e in enumerate(spec.get("extra", [])):
-        nid = f"extra~{i}"
+        nid = f"extra~{e.get('name', i)}"
         nodes[nid] = dict(e, id=nid, kind="extra", parent=None)
     return nodes
 
@@ -283,7 +333,8 @@ def stage_detect(sid, spec, work: Path):
     cache_f = work / sid / "dets.json"
     cache = json.loads(cache_f.read_text()) if cache_f.exists() else {}
     nodes = nodes_for(spec)
-    prompts = sorted({n["prompt"] for n in nodes.values() if n.get("prompt")})
+    want = list(nodes.values()) + [pt for n in nodes.values() for pt in n.get("parts", [])]
+    prompts = sorted({n["prompt"] for n in want if n.get("box") != "hint"})
     todo = [p for p in prompts if p not in cache]
     if todo:
         proc = AutoProcessor.from_pretrained(GDINO_ID, revision=GDINO_REV)
@@ -388,9 +439,7 @@ def stage_segment(sid, spec, dets, work: Path):
             emb = model.get_image_embeddings(base["pixel_values"])
         torch.save(emb, emb_f)
         log(f"[{sid}] SAM image embedding {time.time() - t:.1f}s")
-    meta = {}
-    raw = {}
-    for nid, n in nodes.items():
+    def sam_one(n):
         box, src, iou = pick_box(n, dets)
         pts = n.get("points", [])
         kw = dict(input_boxes=[[box]])
@@ -407,16 +456,25 @@ def stage_segment(sid, spec, dets, work: Path):
         k = int(np.argmax(scores)) if sel == "best" else int(sel)
         m = masks[k].numpy().astype(bool)
         m = clean_mask(m, box, margin=n.get("clip_margin", 10), keep_largest=n.get("keep_largest", False))
+        return m, dict(box=[round(v, 1) for v in box], box_src=src, det_iou=round(iou, 3),
+                       sam_scores=[round(v, 3) for v in scores], sam_pick=k)
+
+    meta = {}
+    raw = {}
+    for nid, n in nodes.items():
+        m, meta[nid] = sam_one(n)
+        for part in n.get("parts", []):  # extra prompts merged into this object's own mask
+            pm, pmeta = sam_one(part)
+            m |= pm
+            meta[nid].setdefault("parts", []).append(pmeta)
         raw[nid] = m
-        meta[nid] = dict(box=[round(v, 1) for v in box], box_src=src, det_iou=round(iou, 3),
-                         sam_scores=[round(s, 3) for s in scores], sam_pick=k)
     for nid, n in nodes.items():  # overlap cleanup
         m = raw[nid].copy()
         for other in n.get("subtract", []):
             m &= ~raw[other]
         cv2.imwrite(str(mdir / f"{nid}.png"), m.astype(np.uint8) * 255)
         meta[nid]["area_frac"] = round(float(m.mean()), 5)
-        log(f"[{sid}] {nid:22s} {meta[nid]['box_src']:13s} iou={meta[nid]['det_iou']:.2f} "
+        log(f"[{sid}] {nid:24s} {meta[nid]['box_src']:13s} iou={meta[nid]['det_iou']:.2f} "
             f"sam={meta[nid]['sam_scores']} pick={meta[nid]['sam_pick']} area={meta[nid]['area_frac'] * 100:.2f}%")
     (work / sid / "seg_meta.json").write_text(json.dumps(meta, indent=1))
     return meta
@@ -449,7 +507,11 @@ def mask_to_polygon(m: np.ndarray, lo=20, hi=120):
         else:
             break
         approx = cv2.approxPolyDP(c, eps, True)
-    pts = approx[:, 0, :].astype(float)
+    pts = [tuple(p) for p in approx[:, 0, :].astype(float)]
+    while len(pts) < lo:  # simple shapes (framed art): split the longest edges
+        i = max(range(len(pts)), key=lambda i: np.hypot(*np.subtract(pts[i], pts[i - 1])))
+        mid = tuple((np.array(pts[i]) + np.array(pts[i - 1])) / 2)
+        pts.insert(i, mid)
     poly = [[int(round(x / (W - 1) * 1000)), int(round(y / (H - 1) * 1000))] for x, y in pts]
     dedup = [p for i, p in enumerate(poly) if p != poly[i - 1]]
     return dedup
@@ -514,35 +576,6 @@ def inpaint_region(lama, rgb, hole, ctx=0.6, min_ctx=64, max_side=1024):
     return out
 
 
-def removal_masks(nodes, masks, nid, shape, width):
-    """Return (core, alpha float32, hole) for removing node nid together with its descendants."""
-    n = nodes[nid]
-    fam = set(descendants(nodes, nid))
-    anc = set(ancestors(nodes, nid))
-    core = np.zeros(shape, bool)
-    for k in fam:
-        core |= masks[k]
-    excl = np.zeros(shape, bool)
-    for k, o in nodes.items():
-        if k in fam or k in anc or o.get("surface") or o["kind"] == "extra" and o.get("surface"):
-            continue
-        excl |= masks[k]
-    excl = dilate(excl, 2) & ~core
-    s = width / 1200.0
-    halo = n.get("halo", 14) * s           # px swallowed around the object (edge halos)
-    bottom = n.get("bottom", 10) * s       # extra px below it (contact shadows)
-    sigma = n.get("sigma", 6) * s          # feather
-    hard = shift_down(dilate(core, halo), int(round(bottom)))
-    # blur a mask grown by 2 sigma so alpha is ~1 over `hard` and fades out beyond it
-    grown = dilate(hard, 2 * sigma)
-    alpha = cv2.GaussianBlur(grown.astype(np.float32), (0, 0), sigma)
-    alpha[hard] = 1.0
-    alpha[excl] = 0.0
-    alpha[alpha < 1.5 / 255] = 0.0
-    hole = (alpha > 0) & ~excl
-    return core, alpha, hole
-
-
 def encode_patch(rgb_full, alpha, icc, path: Path):
     """Crop to alpha>0 bbox, save RGBA WebP. Returns (x, y, w, h)."""
     a8 = np.clip(alpha * 255 + 0.5, 0, 255).astype(np.uint8)
@@ -557,68 +590,319 @@ def encode_patch(rgb_full, alpha, icc, path: Path):
     return x0, y0, x1 - x0, y1 - y0
 
 
+# (halo, bottom, sigma) in px at 1200 px width. Floor-standing furniture needs a wide halo for
+# contact shadows; wall decor and soft goods need a tight one, otherwise LaMa has to redraw the
+# edge of whatever is behind them (the top of an armchair back, a mantel panel).
+_WALL, _SOFT = (6, 0, 3), (6, 4, 3)
+FEATHER_DEFAULTS = {"": (12, 10, 5), "wall art": _WALL, "mirror": _WALL, "round mirror": _WALL,
+                    "wall hanging": _WALL, "throw pillow": _SOFT, "throw blanket": _SOFT,
+                    "table lamp": _SOFT, "vase": _SOFT}
+
+
+class Removal:
+    """Removal geometry for one photo.
+
+    Patches must compose in any order (users remove several objects in sequence and the app
+    draws each chosen patch over the original). So patches are NOT inpainted one by one.
+    Removable units that touch each other (see touches()) form a cluster. The whole cluster is
+    inpainted into one shared "clean plate" (build_plate), and every member's patch is cut from
+    that plate with only its own alpha. Fill behind a side table is therefore wall/floor, never
+    a continuation of the armchair next to it, and two adjacent patches show the same pixels
+    wherever they overlap.
+
+    Hierarchy: a child (pillow) is filled from a plate in which its ancestors (the sofa) stay,
+    so the pillow's hole gets sofa fabric. Its siblings and other touching units are removed.
+    Its parent's patch covers it again with the parent-level plate. "extra" nodes (background
+    furniture the user cannot tap) always stay in tappable plates and are protected from every
+    patch. They are removed only in declutter.jpg.
+    """
+
+    def __init__(self, spec, masks, shape):
+        self.nodes = nodes_for(spec)
+        self.masks = masks
+        self.shape = shape
+        H, W = shape
+        self.s = W / 1200.0
+        self.fam = {k: set(descendants(self.nodes, k)) for k in self.nodes}
+        self.anc = {k: set(ancestors(self.nodes, k)) for k in self.nodes}
+        self.core = {}
+        self.alpha0 = {}
+        for k, n in self.nodes.items():
+            core = np.zeros(shape, bool)
+            for d in self.fam[k]:
+                core |= masks[d]
+            self.core[k] = core
+            self.alpha0[k] = self._feather(core, n)
+        # "touching" uses the hard (fully removed) zone, not the soft feather tail: two plates
+        # meeting only in feather tails differ by a few levels there, which is invisible, while
+        # merging them into one cluster makes a much bigger (blurrier) hole
+        self.reach = {k: dilate(self._hard(self.core[k], n), 2) for k, n in self.nodes.items()}
+        self.own_sup = {k: self._feather(masks[k], n) > 0 for k, n in self.nodes.items()}
+        self._touch = {}
+        self._inner = {}
+        extras = np.zeros(shape, bool)
+        for k, n in self.nodes.items():
+            if n["kind"] == "extra":
+                extras |= masks[k]
+        self.extras = extras
+
+    def _params(self, n):
+        s = self.s
+        d = FEATHER_DEFAULTS.get(label_of(n["id"]) if n["kind"] == "object" else "", FEATHER_DEFAULTS[""])
+        return (n.get("halo", d[0]) * s,      # px swallowed around the object (edge halos)
+                n.get("bottom", d[1]) * s,    # extra px below it (contact shadows)
+                n.get("sigma", d[2]) * s)     # Gaussian feather
+
+    def _hard(self, core, n):
+        halo, bottom, _ = self._params(n)
+        return shift_down(dilate(core, halo), int(round(bottom)))
+
+    def _feather(self, core, n):
+        _, _, sigma = self._params(n)
+        hard = self._hard(core, n)
+        grown = dilate(hard, 1.5 * sigma)
+        a = cv2.GaussianBlur(grown.astype(np.float32), (0, 0), sigma)
+        a[hard] = 1.0
+        a[a < 1.5 / 255] = 0.0
+        return a
+
+    def inner(self, nid):
+        """Object pixels plus a 5 px rim that always belongs to the removal, even where a
+        neighbour's mask overlaps it (SAM masks share anti-aliased fringes; left as context,
+        a dark fringe makes LaMa grow the removed object back)."""
+        if nid not in self._inner:
+            self._inner[nid] = dilate(self.core[nid], 5 * self.s)
+        return self._inner[nid]
+
+    def touches(self, a, b):
+        """Same plate needed: one's mask is in the other's hard zone, or both feathers are
+        substantial (> 0.15) at some pixel. Plates that differ only where one alpha is < 0.15
+        change the composite by at most 0.15 * (plate difference): invisible."""
+        key = tuple(sorted((a, b)))
+        if key not in self._touch:
+            self._touch[key] = bool((self.core[a] & self.reach[b]).any() or (self.core[b] & self.reach[a]).any()
+                                    or ((self.alpha0[a] > 0.15) & (self.alpha0[b] > 0.15)).any())
+        return self._touch[key]
+
+    def cluster(self, nid, with_extras=False):
+        """Units (family roots) inpainted together with nid, given that nid's ancestors stay."""
+        A = self.anc[nid]
+        roots = [k for k, n in self.nodes.items()
+                 if k not in A and (n["parent"] is None or n["parent"] in A)
+                 and (with_extras or n["kind"] != "extra")]
+        comp, todo = {nid}, [nid]
+        while todo:
+            a = todo.pop()
+            for b in roots:
+                if b not in comp and self.touches(a, b):
+                    comp.add(b)
+                    todo.append(b)
+        return sorted(comp)
+
+    def alpha(self, nid):
+        """Patch alpha: own feathered family mask, zero on every other visible object."""
+        keep = self.fam[nid] | self.anc[nid]
+        excl = np.zeros(self.shape, bool)
+        for k in self.nodes:
+            if k not in keep:
+                excl |= self.masks[k]
+        excl = dilate(excl, 2) & ~self.inner(nid)
+        a = self.alpha0[nid].copy()
+        a[excl] = 0.0
+        return a
+
+    def extent(self, nid):
+        """Where the parent is visible once a child is gone: its own mask (closed, holes filled)
+        plus its family's pixels inside its convex hull (a pillow poking above a sofa back), or
+        the whole hull for flat things under other furniture (extent="hull", rugs)."""
+        m = self.masks[nid]
+        pts = cv2.findNonZero(m.astype(np.uint8))
+        hull = np.zeros(self.shape, np.uint8)
+        cv2.fillConvexPoly(hull, cv2.convexHull(pts), 1)
+        hull = hull > 0
+        if self.nodes[nid].get("extent") == "hull":
+            return hull
+        m = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_CLOSE, disk(15 * self.s)) > 0
+        m |= hull & dilate(self.core[nid], 12 * self.s)
+        inv = (~m).astype(np.uint8)
+        n, lab, stats, _ = cv2.connectedComponentsWithStats(inv, 4)
+        H, W = self.shape
+        for i in range(1, n):
+            x, y, w, h, _ = stats[i]
+            if x > 0 and y > 0 and x + w < W and y + h < H:
+                m[lab == i] = True
+        return m
+
+    def hole(self, units, keep_extras=True):
+        h = np.zeros(self.shape, bool)
+        for u in units:
+            h |= self.alpha0[u] > 0
+        if keep_extras:
+            h &= ~(dilate(self.extras, 2) & ~np.any([self.inner(u) for u in units], axis=0))
+        return h
+
+
+def build_plate(lama, base, R, units, region=None, order="large", band=48, ctx=0.5, max_side=1024,
+                refine_max=0.03, protect_extras=True):
+    """Shared clean plate for a cluster, filled one piece at a time.
+
+    One LaMa pass over the whole cluster turns big holes into fog. Instead each piece (an
+    object plus its attachments) is filled with a small hole: its own support. A band of the
+    still-present pieces next to it is masked too, so LaMa does not continue their texture into
+    the hole. Only the piece's support (minus the still-present pieces) is committed. Those are
+    refilled when their turn comes. Small pieces are then refined once more with clean context.
+    The result is still a single image shared by every member of the cluster, so patches compose.
+    `region` limits the work to a parent's extent (child-level plates).
+    """
+    H, W = base.shape[:2]
+    img = base.copy()
+    protect = dilate(R.extras, 2) if protect_extras else np.zeros((H, W), bool)
+    # visible objects outside this cluster (other than the ancestors being kept) stay as context
+    inside = {k for u in units for k in R.fam[u]}
+    keep_anc = set().union(*(R.anc[u] for u in units)) if units else set()
+    others = np.zeros((H, W), bool)
+    for k in R.nodes:
+        if k not in inside and k not in keep_anc and (protect_extras or R.nodes[k]["kind"] != "extra"):
+            others |= R.masks[k]
+    protect |= dilate(others, 2)
+    # Pieces: every listed object of every unit's family, together with its attachments (a white
+    # pillow stacked behind a patterned one is filled in the same pass). Parents before children,
+    # large before small; each pass only fills one piece's own support, so no single LaMa call
+    # sees a giant hole.
+    fam_nodes = [k for u in units for k in R.fam[u]]
+    pieces = [k for k in fam_nodes if R.nodes[k]["kind"] != "attach" or R.nodes[k]["parent"] not in fam_nodes]
+    pmask = {k: R.masks[k] | np.any([R.masks[a] for a in fam_nodes if R.nodes[a]["kind"] == "attach"
+                                     and R.nodes[a]["parent"] == k] or [np.zeros((H, W), bool)], axis=0)
+             for k in pieces}
+    psup = {k: R._feather(pmask[k], R.nodes[k]) > 0 for k in pieces}
+    if isinstance(order, (list, tuple)):
+        seq = [k for k in order if k in pieces] + [k for k in pieces if k not in order]
+    else:
+        sign = -1 if order == "large" else 1
+        seq = sorted(pieces, key=lambda k: (len(R.anc[k]), sign * int(pmask[k].sum())))
+    remaining = set(seq)
+    done = np.zeros((H, W), bool)
+    for k in seq:
+        remaining.discard(k)
+        sup = psup[k] & ~(protect & ~dilate(pmask[k], 5 * R.s))
+        rest = np.zeros((H, W), bool)
+        for r in remaining:
+            rest |= pmask[r]
+        hole = sup | (rest & dilate(sup, band * R.s))
+        commit = sup & ~rest
+        if region is not None:
+            hole &= region
+            commit &= region
+        if not commit.any():
+            continue
+        filled = inpaint_region(lama, img, hole, ctx=ctx, max_side=max_side)
+        img[commit] = filled[commit]
+        done |= commit
+    # pixels of the cluster's hole that no single piece's support covered (the feather of a
+    # union reaches slightly further than the union of feathers)
+    left = R.hole(units, keep_extras=protect_extras) & ~protect & ~done
+    if region is not None:
+        left &= region
+    if left.any():
+        filled = inpaint_region(lama, img, left | (dilate(left, 8) & done), ctx=ctx, max_side=max_side)
+        img[left] = filled[left]
+    # Refinement: with everything in the cluster gone, re-fill each small piece (lamp, pillow,
+    # vase, ...) with its own small hole. Its surroundings are now real background or clean
+    # fill, so LaMa continues e.g. a window railing instead of smearing it.
+    for k in sorted(pieces, key=lambda k: pmask[k].sum()):
+        if pmask[k].mean() > refine_max:
+            continue
+        hole = psup[k] & ~(protect & ~dilate(pmask[k], 5 * R.s))
+        if region is not None:
+            hole &= region
+        if hole.any():
+            filled = inpaint_region(lama, img, hole, ctx=1.0, max_side=max_side)
+            img[hole] = filled[hole]
+    return img
+
+
 def stage_remove(sid, spec, work: Path, lama, only=None):
     rgb, icc = load_original(sid)
     H, W = rgb.shape[:2]
-    nodes = nodes_for(spec)
     masks = load_masks(sid, spec, work)
+    R = Removal(spec, masks, (H, W))
     out_dir = SAMPLES_DIR / sid / "remove"
     rdir = work / sid / "removed"
     rdir.mkdir(parents=True, exist_ok=True)
     meta_f = work / sid / "removal_meta.json"
     meta = json.loads(meta_f.read_text()) if meta_f.exists() else {}
-    for o in spec["objects"]:
+    plates, plate_of = {}, {}
+    pdir = work / sid / "plates"
+    pdir.mkdir(exist_ok=True)
+    # parents before children: a child's plate reuses its parent's plate outside the parent
+    ordered = sorted(spec["objects"], key=lambda o: len(R.anc[o["id"]]))
+    for o in ordered:
         oid = o["id"]
+        t = time.time()
+        units = R.cluster(oid)
+        key = (tuple(sorted(R.anc[oid])), tuple(units))
+        if key not in plates:
+            hole = R.hole(units)
+            parent = R.nodes[oid]["parent"]
+            kw = dict(order=spec.get("plate_order", "large"), band=spec.get("band", 48),
+                      ctx=spec.get("ctx", 0.5), max_side=spec.get("max_side", 1024))
+            if parent is None:
+                plate = build_plate(lama, rgb, R, units, **kw)
+            else:
+                # Outside the parent: identical to the parent's plate, so a child's patch and its
+                # parent's neighbours' patches agree pixel for pixel. On the parent: LaMa
+                # regenerates the parent's surface (sofa fabric under a pillow).
+                region = R.extent(parent)
+                base = rgb.copy()
+                outside = hole & ~region
+                base[outside] = plate_of[parent][outside]
+                plate = build_plate(lama, base, R, units, region=region, **kw)
+            plates[key] = plate
+            name = f"plate{len(plates)}"
+            cv2.imwrite(str(pdir / f"{name}.png"), cv2.cvtColor(plate, cv2.COLOR_RGB2BGR))
+            log(f"[{sid}] plate {name}: keep={list(key[0])} units={list(units)} "
+                f"hole={hole.mean() * 100:.1f}% ({time.time() - t:.1f}s)")
+        plate_of[oid] = plates[key]
         if only and oid not in only:
             continue
-        t = time.time()
-        core, alpha, hole = removal_masks(nodes, masks, oid, (H, W), W)
-        filled = inpaint_region(lama, rgb, hole, ctx=o.get("ctx", 0.6), max_side=o.get("max_side", 1024))
-        x, y, w, h = encode_patch(filled, alpha, icc, out_dir / f"{oid}.webp")
-        comp = (filled * alpha[..., None] + rgb * (1 - alpha[..., None]) + 0.5).astype(np.uint8)
+        plate = plates[key]
+        alpha = R.alpha(oid)
+        x, y, w, h = encode_patch(plate, alpha, icc, out_dir / f"{oid}.webp")
+        comp = (plate * alpha[..., None] + rgb * (1 - alpha[..., None]) + 0.5).astype(np.uint8)
         cv2.imwrite(str(rdir / f"{oid}.png"), cv2.cvtColor(comp, cv2.COLOR_RGB2BGR))
         meta[oid] = dict(patch=f"remove/{oid}.webp", x=x, y=y, w=w, h=h)
-        log(f"[{sid}] removed {oid:22s} patch {w}x{h}@({x},{y}) "
-            f"{(out_dir / f'{oid}.webp').stat().st_size / 1024:.0f} KB ({time.time() - t:.1f}s)")
+        log(f"[{sid}] patch {oid:22s} {w}x{h}@({x},{y}) {(out_dir / f'{oid}.webp').stat().st_size / 1024:.0f} KB")
     meta_f.write_text(json.dumps(meta, indent=1))
     return meta
 
 
 def stage_declutter(sid, spec, work: Path, lama):
+    """All movable things (listed objects + extras) removed, built like the patch plates:
+    each touching group is filled one unit at a time."""
     rgb, icc = load_original(sid)
     H, W = rgb.shape[:2]
-    nodes = nodes_for(spec)
     masks = load_masks(sid, spec, work)
+    R = Removal(spec, masks, (H, W))
     dc = spec.get("declutter", {})
-    s = W / 1200.0
-    core = np.zeros((H, W), bool)
-    for k in nodes:
-        core |= masks[k]
-    hard = shift_down(dilate(core, dc.get("halo", 14) * s), int(dc.get("bottom", 10) * s))
+    tops = [k for k, n in R.nodes.items() if n["parent"] is None]
     t = time.time()
-    if dc.get("mode", "single") == "single":
-        filled = inpaint_region(lama, rgb, hard, ctx=1.0, max_side=dc.get("max_side", 1200))
-    else:  # sequential: remove groups in the given order, each pass seeing the previous result
-        filled = rgb
-        done = np.zeros((H, W), bool)
-        for group in dc["order"]:
-            g = np.zeros((H, W), bool)
-            for k in group:
-                for d in descendants(nodes, k):
-                    g |= masks[d]
-            g = shift_down(dilate(g, dc.get("halo", 14) * s), int(dc.get("bottom", 10) * s)) & ~done
-            if g.any():
-                filled = inpaint_region(lama, filled, g, ctx=dc.get("ctx", 0.8), max_side=dc.get("max_side", 1024))
-            done |= g
-        rest = hard & ~done
-        if rest.any():
-            filled = inpaint_region(lama, filled, rest, ctx=0.8, max_side=dc.get("max_side", 1024))
-    sigma = 4 * s
-    a = cv2.GaussianBlur(dilate(hard, 2 * sigma).astype(np.float32), (0, 0), sigma)
-    a[hard] = 1.0
-    out = (filled * a[..., None] + rgb * (1 - a[..., None]) + 0.5).astype(np.uint8)
+    plate = rgb.copy()
+    alpha = np.zeros((H, W), np.float32)
+    seen = set()
+    for k in tops:
+        if k in seen:
+            continue
+        units = R.cluster(k, with_extras=True)
+        seen |= set(units)
+        filled = build_plate(lama, rgb, R, units, protect_extras=False, order=dc.get("order", "large"),
+                             ctx=dc.get("ctx", 0.5), max_side=dc.get("max_side", 1024))
+        hole = R.hole(units, keep_extras=False)
+        plate[hole] = filled[hole]
+        for u in units:
+            alpha = np.maximum(alpha, R.alpha0[u])
+    out = (plate * alpha[..., None] + rgb * (1 - alpha[..., None]) + 0.5).astype(np.uint8)
     cv2.imwrite(str(work / sid / "declutter_candidate.png"), cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
-    log(f"[{sid}] declutter candidate ({time.time() - t:.1f}s, {core.mean() * 100:.1f}% of image)")
+    log(f"[{sid}] declutter candidate ({time.time() - t:.1f}s)")
     return out, icc
 
 
@@ -662,7 +946,8 @@ def stage_write(sid, spec, work: Path):
         if f.name not in keep:
             f.unlink()
     (SAMPLES_DIR / sid / "inventory.json").write_text(json.dumps(inv, separators=(",", ":")) + "\n")
-    log(f"[{sid}] wrote inventory.json ({len(objs)} objects, declutter={'declutter' in inv})")
+    log(f"[{sid}] wrote inventory.json ({len(objs)} objects, declutter={'declutter' in inv}, "
+        f"ICC {icc_name(icc)})")
     return inv
 
 
@@ -691,6 +976,7 @@ def stage_verify(sid, spec, work: Path):
     ids = {o["id"] for o in inv["objects"]}
     problems = []
     tiles = []
+    patches = {}
     for o in inv["objects"]:
         r = o["removal"]
         pim = Image.open(SAMPLES_DIR / sid / r["patch"])
@@ -699,37 +985,98 @@ def stage_verify(sid, spec, work: Path):
         if (pim.info.get("icc_profile") or None) != (icc or None):
             problems.append(f"{o['id']}: ICC profile differs from original.jpg")
         p = np.array(pim.convert("RGBA"))
+        patches[o["id"]] = p
         if p.shape[:2] != (r["h"], r["w"]):
             problems.append(f"{o['id']}: patch size {p.shape[:2]} != json {(r['h'], r['w'])}")
         if r["x"] < 0 or r["y"] < 0 or r["x"] + r["w"] > W or r["y"] + r["h"] > H:
             problems.append(f"{o['id']}: patch outside image")
-        border = np.concatenate([p[0, :, 3], p[-1, :, 3], p[:, 0, 3], p[:, -1, 3]])
-        # alpha may only be non-zero on the patch border where it touches the image border
-        edge_ok = [r["y"] == 0, r["y"] + r["h"] == H, r["x"] == 0, r["x"] + r["w"] == W]
-        segs = [p[0, :, 3], p[-1, :, 3], p[:, 0, 3], p[:, -1, 3]]
-        for ok, seg, name in zip(edge_ok, segs, "top bottom left right".split()):
-            if not ok and seg.max() > 2:
-                problems.append(f"{o['id']}: alpha {seg.max()} on {name} patch edge (visible seam)")
         for c in o["children"]:
             if c not in ids:
                 problems.append(f"{o['id']}: unknown child {c}")
         comp = browser_composite(orig, p, r["x"], r["y"])
-        # alignment: the composite must match the pipeline's in-memory result
+        # alignment: the browser-style composite must match the pipeline's in-memory result
         ref = cv2.cvtColor(cv2.imread(str(work / sid / "removed" / f"{o['id']}.png")), cv2.COLOR_BGR2RGB)
         diff = np.abs(comp.astype(int) - ref.astype(int))
         outside = np.ones((H, W), bool)
         outside[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]] = False
         if diff[outside].max() > 0:
             problems.append(f"{o['id']}: pixels changed outside patch rect")
-        mean_err = float(diff.mean())
-        p95 = float(np.percentile(diff[~outside], 99.5))
-        if p95 > 40:
-            problems.append(f"{o['id']}: webp composite deviates (p99.5={p95:.0f})")
-        tiles.append((o, comp, mean_err))
+        p995 = float(np.percentile(diff[~outside], 99.5))
+        if p995 > 40:
+            problems.append(f"{o['id']}: webp composite deviates from reference (p99.5={p995:.0f})")
+        tiles.append((o, comp))
+
+    def compose(order):
+        img = orig
+        for oid in order:
+            r = next(o for o in inv["objects"] if o["id"] == oid)["removal"]
+            img = browser_composite(img, patches[oid], r["x"], r["y"])
+        return img
+
+    # (b) everything removed. Valid orders never draw a child after its parent (removing a
+    # parent removes its children), so compare: roots in list order, roots reversed, and every
+    # object children-first.
+    parent = {c: o["id"] for o in inv["objects"] for c in o["children"]}
+    roots = [o["id"] for o in inv["objects"] if o["id"] not in parent]
+
+    def depth(a):
+        return 0 if a not in parent else 1 + depth(parent[a])
+    every = sorted((o["id"] for o in inv["objects"]), key=lambda a: -depth(a))
+    all_fwd, all_rev, all_every = compose(roots), compose(roots[::-1]), compose(every)
+    d = np.maximum(np.abs(all_fwd.astype(int) - all_rev.astype(int)),
+                   np.abs(all_fwd.astype(int) - all_every.astype(int))).max(axis=2)
+    stats = {"all": (int(d.max()), float((d > 6).mean() * 100))}
+    if (d > 12).mean() > 0.001:
+        problems.append(f"all-removed differs by order: max {d.max()}, {stats['all'][1]:.3f}% px > 6")
+    # (c) every pair of unrelated objects whose patches overlap, both orders
+
+    def line(a):
+        out = []
+        while a in parent:
+            a = parent[a]
+            out.append(a)
+        return out
+    pairs = []
+    for i, a in enumerate(inv["objects"]):
+        for b in inv["objects"][i + 1:]:
+            if a["id"] in line(b["id"]) or b["id"] in line(a["id"]):
+                continue
+            ra, rb = a["removal"], b["removal"]
+            ox = min(ra["x"] + ra["w"], rb["x"] + rb["w"]) - max(ra["x"], rb["x"])
+            oy = min(ra["y"] + ra["h"], rb["y"] + rb["h"]) - max(ra["y"], rb["y"])
+            if ox > 0 and oy > 0:
+                ab, ba = compose([a["id"], b["id"]]), compose([b["id"], a["id"]])
+                dd = np.abs(ab.astype(int) - ba.astype(int)).max(axis=2)
+                pairs.append((ox * oy, a["id"], b["id"], ab, ba, int(dd.max()), int((dd > 6).sum())))
+                if (dd > 12).sum() > 50:
+                    problems.append(f"pair {a['id']}+{b['id']}: order-dependent ({(dd > 12).sum()} px differ > 12)")
+    pairs.sort(key=lambda t: -t[0])
+    log(f"[{sid}] composability: all-removed fwd/rev max diff {stats['all'][0]} ({stats['all'][1]:.3f}% px > 6); "
+        f"{len(pairs)} overlapping pairs, worst max diff {max([p[5] for p in pairs], default=0)}")
+    for _, a, b, _, _, mx, n6 in pairs:
+        log(f"[{sid}]   pair {a} + {b}: max diff {mx}, {n6} px > 6")
     contact_sheet(sid, inv, orig, tiles, work)
+    combos_sheet(sid, orig, all_fwd, pairs, work)
     status = "OK" if not problems else "PROBLEMS:\n  " + "\n  ".join(problems)
     log(f"[{sid}] verify {status}")
     return problems
+
+
+def combos_sheet(sid, orig, all_fwd, pairs, work: Path):
+    H, W = orig.shape[:2]
+    bgr = lambda a: cv2.cvtColor(a, cv2.COLOR_RGB2BGR)
+    rows = [np.hstack([bgr(orig), np.full((H, 6, 3), 255, np.uint8), bgr(all_fwd)])]
+    for _, a, b, ab, ba, mx, n6 in pairs[:4]:
+        row = np.hstack([bgr(ab), np.full((H, 6, 3), 255, np.uint8), bgr(ba)])
+        cv2.putText(row, f"{a} then {b}", (10, 30), 0, 0.9, (0, 0, 0), 4)
+        cv2.putText(row, f"{a} then {b}", (10, 30), 0, 0.9, (255, 255, 255), 2)
+        cv2.putText(row, f"{b} then {a}  (max diff {mx})", (W + 16, 30), 0, 0.9, (0, 0, 0), 4)
+        cv2.putText(row, f"{b} then {a}  (max diff {mx})", (W + 16, 30), 0, 0.9, (255, 255, 255), 2)
+        rows.append(row)
+    sheet = np.vstack([np.vstack([r, np.full((6, r.shape[1], 3), 255, np.uint8)]) for r in rows])
+    sc = 1400 / sheet.shape[1]
+    sheet = cv2.resize(sheet, (1400, int(sheet.shape[0] * sc)), interpolation=cv2.INTER_AREA)
+    cv2.imwrite(str(work / f"contact-{sid}-combos.jpg"), sheet, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
 
 def contact_sheet(sid, inv, orig, tiles, work: Path):
@@ -755,7 +1102,7 @@ def contact_sheet(sid, inv, orig, tiles, work: Path):
     # removal grid: before | after crops around each patch
     cells = []
     cw = 520
-    for o, comp, err in tiles:
+    for o, comp in tiles:
         r = o["removal"]
         m = 30
         x0, y0 = max(0, r["x"] - m), max(0, r["y"] - m)
@@ -819,7 +1166,7 @@ def main():
             stage_segment(sid, spec, dets, work)
         if "remove" in stages:
             stage_remove(sid, spec, work, lama, only=args.only)
-        if "declutter" in stages and spec.get("declutter"):
+        if "declutter" in stages and "declutter" in spec:
             stage_declutter(sid, spec, work, lama)
         if "write" in stages:
             stage_write(sid, spec, work)

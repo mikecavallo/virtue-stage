@@ -47,11 +47,13 @@ function HeroPreview() {
   )
 }
 
+const DECLUTTER_SAMPLE = 'bathroom'
+
 function DeclutterShowcase() {
   const [inv, setInv] = useState(null)
   useEffect(() => {
     let alive = true
-    loadInventory('living-room').then((v) => alive && setInv(v))
+    loadInventory(DECLUTTER_SAMPLE).then((v) => alive && setInv(v))
     return () => {
       alive = false
     }
@@ -61,10 +63,19 @@ function DeclutterShowcase() {
     <section className="section">
       <div className="section-head">
         <span className="badge">Occupied homes</span>
-        <h2>Clear the seller's furniture, keep the house</h2>
-        <p>Every movable piece removed in one pass. Walls, windows, flooring, and the view are the original pixels.</p>
+        <h2>Clear the clutter, keep the house</h2>
+        <p>Every movable item removed in one pass: plants, stool, bin, mirror. Tile, cabinets, and fixtures are the original pixels. Drag to compare.</p>
       </div>
-      <CompareSlider before={sampleImage('living-room')} after={`${sampleBase('living-room')}${inv.declutter}`} beforeLabel="As photographed" afterLabel="Decluttered" aspect={`${inv.width} / ${inv.height}`} className="compare--wide" />
+      <div className="declutter">
+        <CompareSlider
+          before={sampleImage(DECLUTTER_SAMPLE)}
+          after={`${sampleBase(DECLUTTER_SAMPLE)}${inv.declutter}`}
+          beforeLabel="As photographed"
+          afterLabel="Decluttered"
+          aspect={`${inv.width} / ${inv.height}`}
+          className="compare--wide"
+        />
+      </div>
     </section>
   )
 }
