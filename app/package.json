@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "smoke:live": "node scripts/smoke-live.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.563.0",
