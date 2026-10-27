@@ -5,7 +5,7 @@
 //  - Whole-room staging can't be masked, so a vision model checks the result for
 //    architectural changes and we regenerate once with the problems spelled out.
 import { generateImage, checkStructure } from './tasks.js'
-import { buildEditPrompt, buildStagingPrompt } from './prompts.js'
+import { buildEditPrompt, buildPolishPrompt, buildStagingPrompt } from './prompts.js'
 import { nearestAspectRatio, withDescendants, toPixels } from '../lib/geometry.js'
 import { hexToRgb } from '../lib/pixels.js'
 import {
@@ -15,6 +15,7 @@ import {
   compositeWithMask,
   driftOutsideMask,
   guideImage,
+  guideFromMask,
   loadImage,
   polygonMask,
   recolorCanvas,
@@ -28,7 +29,9 @@ const diag = (c) => Math.hypot(c.width, c.height)
 export function editMask(canvas, polygons, action, subtract = []) {
   const d = diag(canvas)
   const opts = {
-    remove: { dilate: d * 0.012, feather: d * 0.008 },
+    // Removals reach further than the outline to take the object's shadow with it.
+    remove: { dilate: d * 0.02, feather: d * 0.01 },
+    polish: { dilate: d * 0.035, feather: d * 0.015 },
     replace: { dilate: d * 0.03, feather: d * 0.012 },
     restyle: { dilate: d * 0.005, feather: d * 0.004 },
     recolor: { dilate: 1, feather: d * 0.003 },
@@ -51,40 +54,57 @@ export function editMask(canvas, polygons, action, subtract = []) {
   return featherMask(mask, opts.feather)
 }
 
-export async function runObjectEdit({ settings, canvas, objects, object, action, instruction, onStatus = () => {}, signal }) {
-  const targets = action === 'remove' ? withDescendants(objects, object.id) : [object]
-  const polygons = targets.map((o) => o.mask)
-  const childLabels = targets.slice(1).map((o) => o.label)
-  const input = canvasToBase64(canvas)
-  const guide = canvasToBase64(guideImage(canvas, polygons))
-  const prompt = buildEditPrompt({ action, label: object.label, childLabels, instruction })
-  const mask = editMask(canvas, polygons, action)
+// Generate with the model, keep the attempt that drifted least outside the mask,
+// and paste it back inside the mask only.
+async function generateMasked({ settings, canvas, prompt, images, mask, firstStatus, pasteStatus, onStatus, signal }) {
   const aspectRatio = nearestAspectRatio(canvas.width, canvas.height)
-
   let best = null
   for (let attempt = 1; attempt <= 2; attempt++) {
-    onStatus(attempt === 1 ? `Asking ${settings.imageModel} to ${action} the ${object.label}` : 'The model shifted the photo. Retrying once')
-    const out = await generateImage({
-      apiKey: settings.apiKey,
-      model: settings.imageModel,
-      prompt,
-      images: [input, guide],
-      aspectRatio,
-      imageSize: settings.imageSize,
-      signal,
-    })
+    onStatus(attempt === 1 ? firstStatus : 'The model shifted the photo. Retrying once')
+    const out = await generateImage({ apiKey: settings.apiKey, model: settings.imageModel, prompt, images, aspectRatio, imageSize: settings.imageSize, signal })
     const generated = await base64ToCanvas(out, canvas.width, canvas.height)
     const drift = driftOutsideMask(canvas, generated, mask)
     if (!best || drift < best.drift) best = { generated, drift, attempt }
     if (drift <= DRIFT_LIMIT) break
   }
-  onStatus('Pasting the edit back inside the outline')
-  return {
-    canvas: compositeWithMask(canvas, best.generated, mask),
-    removedIds: action === 'remove' ? targets.map((o) => o.id) : [],
-    drift: best.drift,
-    attempts: best.attempt,
-  }
+  onStatus(pasteStatus)
+  return { canvas: compositeWithMask(canvas, best.generated, mask), drift: best.drift, attempts: best.attempt }
+}
+
+export async function runObjectEdit({ settings, canvas, objects, object, action, instruction, onStatus = () => {}, signal }) {
+  const targets = action === 'remove' ? withDescendants(objects, object.id) : [object]
+  const polygons = targets.map((o) => o.mask)
+  const childLabels = targets.slice(1).map((o) => o.label)
+  const result = await generateMasked({
+    settings,
+    canvas,
+    prompt: buildEditPrompt({ action, label: object.label, childLabels, instruction }),
+    images: [canvasToBase64(canvas), canvasToBase64(guideImage(canvas, polygons))],
+    mask: editMask(canvas, polygons, action),
+    firstStatus: `Asking ${settings.imageModel} to ${action} the ${object.label}`,
+    pasteStatus: 'Pasting the edit back inside the outline',
+    onStatus,
+    signal,
+  })
+  return { ...result, polygons, removedIds: action === 'remove' ? targets.map((o) => o.id) : [] }
+}
+
+// Cleanup pass over every area edited so far (see editedRegions in history.js).
+// `protect` are outlines of untouched objects near the edits (wall art, a chair)
+// that are cut out of the mask so the cleanup can't alter them.
+export async function runPolish({ settings, canvas, polygons, protect = [], onStatus = () => {}, signal }) {
+  const mask = editMask(canvas, polygons, 'polish', protect)
+  return generateMasked({
+    settings,
+    canvas,
+    prompt: buildPolishPrompt(),
+    images: [canvasToBase64(canvas), canvasToBase64(guideFromMask(canvas, mask))],
+    mask,
+    firstStatus: `Polishing the edited areas with ${settings.imageModel}`,
+    pasteStatus: 'Pasting the cleanup back inside the edited areas',
+    onStatus,
+    signal,
+  })
 }
 
 export async function runStaging({ settings, canvas, roomType, style, isEmpty, onStatus = () => {}, signal }) {

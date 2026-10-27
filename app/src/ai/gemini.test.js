@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { API_BASE, GeminiError, extractImage, extractText, generateContent, isKeyError, listModels, parseJson } from './gemini.js'
 import { generateImage, segmentObjects, checkStructure } from './tasks.js'
-import { buildEditPrompt, buildStagingPrompt, STYLE_IDS, ROOM_TYPES } from './prompts.js'
+import { buildEditPrompt, buildPolishPrompt, buildStagingPrompt, STYLE_IDS, ROOM_TYPES } from './prompts.js'
 
 const jsonResponse = (status, body) => ({ ok: status < 400, status, json: async () => body })
 const textResp = (text) => ({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] })
@@ -157,6 +157,13 @@ describe('prompts', () => {
 
   it('feeds QA issues back into the retry prompt', () => {
     expect(buildStagingPrompt({ style: 'modern', roomType: 'bedroom', issues: ['added a window'] })).toContain('- added a window')
+  })
+
+  it('polish asks for cleanup only, with no new objects', () => {
+    const p = buildPolishPrompt()
+    expect(p).toContain('ghost shadows')
+    expect(p).toContain('Do not add any objects')
+    expect(p).toContain('Do not change anything outside the highlighted areas')
   })
 
   it('mentions children when removing a parent object', () => {

@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { Download, FlaskConical, Upload, Zap, Columns2, Undo2, Redo2 } from 'lucide-react'
+import { Download, FlaskConical, Upload, Zap, Columns2, Undo2, Redo2, Sparkles } from 'lucide-react'
 import { Wordmark } from '../components/Logo.jsx'
 import Editor from '../studio/Editor.jsx'
 import { EditTab, HistoryTab, StageTab } from '../studio/Inspector.jsx'
 import SettingsDialog from '../studio/SettingsDialog.jsx'
 import ExportDialog from '../studio/ExportDialog.jsx'
-import { initialState, reducer, renderOps, replayBaseIndex, withoutRemoved, disclosureText, changeLog } from '../studio/history.js'
+import { initialState, reducer, renderOps, replayBaseIndex, withoutRemoved, disclosureText, changeLog, editedRegions, polishProtect } from '../studio/history.js'
 import { SAMPLES, sampleBase, sampleImage, loadInventory } from '../lib/samples.js'
 import { loadSettings, saveSettings } from '../lib/settings.js'
 import { canvasToBase64, canvasToBlob, imageToCanvas, loadImage, stampDisclosure } from '../lib/canvas.js'
-import { fitWithin, slugify } from '../lib/geometry.js'
+import { fitWithin, slugify, withDescendants } from '../lib/geometry.js'
 import { detectRoom, segmentObjects } from '../ai/tasks.js'
-import { runObjectEdit, runStaging } from '../ai/pipeline.js'
+import { runObjectEdit, runPolish, runStaging } from '../ai/pipeline.js'
 import { STYLES } from '../ai/prompts.js'
-import { isKeyError, listModels } from '../ai/gemini.js'
+import { GeminiError, isKeyError, listModels } from '../ai/gemini.js'
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 let stepCounter = 0
@@ -63,6 +63,7 @@ export default function Studio({ initialSample }) {
   const objects = step?.objects || []
   const selected = objects.find((o) => o.id === state.selectedId) || null
   const busy = Boolean(state.busy)
+  const regions = editedRegions(steps, cursor)
 
   const resetPhoto = () => {
     abortRef.current?.abort()
@@ -233,7 +234,8 @@ export default function Studio({ initialSample }) {
       return applyReplayable({ type: 'recolor', objectId: obj.id, hex: value }, `Recolored ${obj.label} ${String(name).toLowerCase()}`, 'in-browser recolor')
     }
     if (action === 'remove' && !settingsRef.current.apiKey) {
-      return applyReplayable({ type: 'demo-remove', objectId: obj.id }, `Removed ${obj.label}`, 'LaMa, precomputed')
+      const polygons = withDescendants(cur.objects, obj.id).map((o) => o.mask)
+      return applyReplayable({ type: 'demo-remove', objectId: obj.id, polygons }, `Removed ${obj.label}`, 'LaMa, precomputed')
     }
     const verb = { remove: 'Removing', restyle: 'Restyling', replace: 'Replacing' }[action]
     await runGenerative(
@@ -246,7 +248,7 @@ export default function Studio({ initialSample }) {
         note: res.attempts > 1 ? 'regenerated once (model shifted the photo)' : '',
         objects: action === 'replace' ? cur.objects.map((o) => (o.id === obj.id ? { ...o, label: value.replace(/^an? /, '') } : o)) : withoutRemoved(cur.objects, res.removedIds),
         scanned: cur.scanned,
-        op: { type: action },
+        op: { type: action, polygons: res.polygons },
       }),
     )
   }
@@ -262,6 +264,29 @@ export default function Studio({ initialSample }) {
         setTab('edit')
         await scanCanvas(result.canvas)
       },
+    )
+  }
+
+  const onPolish = async () => {
+    if (!settingsRef.current.apiKey) {
+      return failAi(new GeminiError('Polish sends your edited areas to Gemini for cleanup. Add your key to use it.', { code: 'no_key' }), onPolish)
+    }
+    const st = stateRef.current
+    const cur = st.steps[st.cursor]
+    const polygons = editedRegions(st.steps, st.cursor)
+    if (!polygons.length) return
+    const protect = polishProtect(cur.objects, polygons)
+    await runGenerative(
+      'Polishing edits',
+      (signal, onStatus) => runPolish({ settings: settingsRef.current, canvas: canvases.current.get(cur.id), polygons, protect, onStatus, signal }),
+      (res) => ({
+        label: 'Polished the edited areas',
+        engine: settingsRef.current.imageModel,
+        note: res.attempts > 1 ? 'regenerated once (model shifted the photo)' : 'cleanup pasted back inside edited areas',
+        objects: cur.objects,
+        scanned: cur.scanned,
+        op: { type: 'polish' },
+      }),
     )
   }
 
@@ -409,6 +434,14 @@ export default function Studio({ initialSample }) {
             </label>
             <button className={`btn btn--ghost btn--sm ${compare ? 'is-on' : ''}`} disabled={cursor < 1} onClick={() => setCompare((c) => !c)}>
               <Columns2 size={15} /> {compare ? 'Back to editing' : 'Compare'}
+            </button>
+            <button
+              className="btn btn--outline btn--sm polish-btn"
+              disabled={busy || !regions.length}
+              onClick={onPolish}
+              title={regions.length ? 'Clean up leftover shadows, smudges, and outlines around your edits' : 'Remove or replace something first'}
+            >
+              <Sparkles size={15} /> Polish
             </button>
             <span className="spacer" />
             <button className="icon-btn" disabled={busy || cursor <= 0} onClick={() => goto(cursor - 1)} aria-label="Undo">

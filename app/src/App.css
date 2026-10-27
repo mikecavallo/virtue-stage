@@ -760,6 +760,10 @@ h3 {
   gap: 0.5rem;
   margin-top: 0.6rem;
 }
+.polish-btn:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-2);
+}
 .room-summary {
   margin-top: 0.4rem;
   align-self: stretch;

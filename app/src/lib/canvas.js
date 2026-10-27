@@ -142,6 +142,22 @@ export function guideImage(base, polygons) {
   return out
 }
 
+// Like guideImage, but tints an arbitrary (already dilated) mask, so the model
+// also sees the margin around each edit where shadows and smudges live.
+export function guideFromMask(base, mask) {
+  const tint = createCanvas(base.width, base.height)
+  const t = tint.getContext('2d')
+  t.fillStyle = 'rgb(255, 0, 200)'
+  t.fillRect(0, 0, tint.width, tint.height)
+  t.globalCompositeOperation = 'destination-in'
+  t.drawImage(mask, 0, 0)
+  const out = cloneCanvas(base)
+  const ctx = out.getContext('2d')
+  ctx.globalAlpha = 0.4
+  ctx.drawImage(tint, 0, 0)
+  return out
+}
+
 export function recolorCanvas(base, mask, targetRgb, options) {
   const out = cloneCanvas(base)
   const ctx = out.getContext('2d')
