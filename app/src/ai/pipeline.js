@@ -5,14 +5,15 @@
 //  - Whole-room staging can't be masked, so a vision model checks the result for
 //    architectural changes and we regenerate once with the problems spelled out.
 import { generateImage, checkStructure } from './tasks.js'
-import { buildEditPrompt, buildPolishPrompt, buildStagingPrompt } from './prompts.js'
-import { nearestAspectRatio, withDescendants, toPixels } from '../lib/geometry.js'
+import { buildEditPrompt, buildMatchStagingPrompt, buildPolishPrompt, buildStagingPrompt } from './prompts.js'
+import { nearestAspectRatio, protectedOutlines, topLevel, withDescendants, toPixels } from '../lib/geometry.js'
 import { hexToRgb } from '../lib/pixels.js'
 import {
   base64ToCanvas,
   canvasToBase64,
   cloneCanvas,
   compositeWithMask,
+  cropBox,
   driftOutsideMask,
   guideImage,
   guideFromMask,
@@ -29,8 +30,9 @@ const diag = (c) => Math.hypot(c.width, c.height)
 export function editMask(canvas, polygons, action, subtract = []) {
   const d = diag(canvas)
   const opts = {
-    // Removals reach further than the outline to take the object's shadow with it.
-    remove: { dilate: d * 0.02, feather: d * 0.01 },
+    // Removals include the cleanup pass: the mask reaches past the outline to
+    // take shadows and smudges with it (untouched neighbours are cut back out).
+    remove: { dilate: d * 0.035, feather: d * 0.015 },
     polish: { dilate: d * 0.035, feather: d * 0.015 },
     replace: { dilate: d * 0.03, feather: d * 0.012 },
     restyle: { dilate: d * 0.005, feather: d * 0.004 },
@@ -71,17 +73,21 @@ async function generateMasked({ settings, canvas, prompt, images, mask, firstSta
   return { canvas: compositeWithMask(canvas, best.generated, mask), drift: best.drift, attempts: best.attempt }
 }
 
-export async function runObjectEdit({ settings, canvas, objects, object, action, instruction, onStatus = () => {}, signal }) {
-  const targets = action === 'remove' ? withDescendants(objects, object.id) : [object]
+// `objectIds` (removal only) removes a whole multi-selection in one model call.
+export async function runObjectEdit({ settings, canvas, objects, object, objectIds, action, instruction, onStatus = () => {}, signal }) {
+  const picks = action === 'remove' && objectIds?.length ? topLevel(objects, objectIds) : [object.id]
+  const pickObjs = picks.map((id) => objects.find((o) => o.id === id)).filter(Boolean)
+  const targets = action === 'remove' ? [...new Map(pickObjs.flatMap((o) => withDescendants(objects, o.id)).map((o) => [o.id, o])).values()] : [object]
   const polygons = targets.map((o) => o.mask)
-  const childLabels = targets.slice(1).map((o) => o.label)
+  const labels = pickObjs.map((o) => o.label)
+  const childLabels = targets.filter((t) => !picks.includes(t.id)).map((o) => o.label)
   const result = await generateMasked({
     settings,
     canvas,
-    prompt: buildEditPrompt({ action, label: object.label, childLabels, instruction }),
+    prompt: buildEditPrompt({ action, label: object.label, labels, childLabels, instruction }),
     images: [canvasToBase64(canvas), canvasToBase64(guideImage(canvas, polygons))],
-    mask: editMask(canvas, polygons, action),
-    firstStatus: `Asking ${settings.imageModel} to ${action} the ${object.label}`,
+    mask: editMask(canvas, polygons, action, action === 'remove' ? protectedOutlines(objects, polygons) : []),
+    firstStatus: picks.length > 1 ? `Asking ${settings.imageModel} to remove ${picks.length} items in one pass` : `Asking ${settings.imageModel} to ${action} the ${object.label}`,
     pasteStatus: 'Pasting the edit back inside the outline',
     onStatus,
     signal,
@@ -107,8 +113,12 @@ export async function runPolish({ settings, canvas, polygons, protect = [], onSt
   })
 }
 
-export async function runStaging({ settings, canvas, roomType, style, isEmpty, onStatus = () => {}, signal }) {
+// `keep`: objects to stage around ("match existing furniture"). They go in as
+// reference crops and their pixels are pasted back over the result.
+export async function runStaging({ settings, canvas, roomType, style, isEmpty, keep = [], onStatus = () => {}, signal }) {
   const input = canvasToBase64(canvas)
+  const refs = keep.map((o) => canvasToBase64(cropBox(canvas, o.box_2d), { maxSide: 768 }))
+  const keepMask = keep.length ? editMask(canvas, keep.map((o) => o.mask), 'restyle') : null
   const aspectRatio = nearestAspectRatio(canvas.width, canvas.height)
   let issues = []
   let last = null
@@ -117,13 +127,16 @@ export async function runStaging({ settings, canvas, roomType, style, isEmpty, o
     const out = await generateImage({
       apiKey: settings.apiKey,
       model: settings.imageModel,
-      prompt: buildStagingPrompt({ style, roomType, isEmpty, issues }),
-      images: [input],
+      prompt: keep.length
+        ? buildMatchStagingPrompt({ roomType, keepLabels: keep.map((o) => o.label), issues })
+        : buildStagingPrompt({ style, roomType, isEmpty, issues }),
+      images: [input, ...refs],
       aspectRatio,
       imageSize: settings.imageSize,
       signal,
     })
-    const staged = await base64ToCanvas(out, canvas.width, canvas.height)
+    let staged = await base64ToCanvas(out, canvas.width, canvas.height)
+    if (keepMask) staged = compositeWithMask(staged, canvas, keepMask)
     onStatus(`Checking architecture with ${settings.visionModel}`)
     let qa
     try {

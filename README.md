@@ -17,8 +17,10 @@ VirtueStage is a static web app (no backend). Visitors without an API key get a 
 | **Segment** | Gemini 3.8 Flash returns a labeled polygon for every movable object. Items resting on furniture (pillows on a sofa, a vase on a table) are linked to it. |
 | **Tap** | Hit-testing runs in the browser. The smallest object under the pointer wins, so you can grab a pillow without grabbing the sofa. |
 | **Remove / restyle / replace** | Nano Banana 2.1 (`gemini-nano-banana-2.1`) receives the photo plus a copy with the object highlighted in magenta. |
-| **Polish** | One tap after removals: Nano Banana 2.1 cleans leftover shadows, smudges, and ghost outlines in and around the edited areas only. Untouched furniture nearby is masked out, rugs stay cleanable. |
+| **Multi-select** | Shift-click (or the Select multiple toggle on touch) to grab several objects; one model call removes them all, one recolor paints them all. |
+| **Polish** | Live removals already include cleanup in the same call (wider shadow margin, untouched neighbours masked out). Polish is an optional second pass over every edited area, and the way to clean up the demo's precomputed removals. |
 | **Recolor** | Runs locally in CIELAB space: swaps chroma, keeps the original lightness variation, so fabric still looks like fabric. Instant and free. |
+| **Match existing furniture** | Remove all but 1 to 3 pieces and the Stage tab offers to stage the room around them: the kept pieces go to the model as reference crops, and their pixels are pasted back afterwards so they stay exactly as photographed. |
 | **Stage** | Six style presets × six room types, with prompts that spend most of their words on what must not change. |
 | **Disclose** | Export stamps a "Virtually staged" or "Digitally altered" label (California AB 723), offers the original as a separate download, and writes a change log. |
 

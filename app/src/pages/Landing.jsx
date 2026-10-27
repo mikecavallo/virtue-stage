@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, Eraser, Github, Layers, MousePointerClick, Palette, ScanSearch, ShieldCheck, Sparkles, Stamp } from 'lucide-react'
+import { ArrowRight, CheckCircle2, Eraser, Github, Layers, MousePointerClick, Palette, ScanSearch, ShieldCheck, Sparkles, Stamp } from 'lucide-react'
 import { Wordmark } from '../components/Logo.jsx'
 import CompareSlider from '../components/CompareSlider.jsx'
 import { loadInventory, sampleBase, sampleImage } from '../lib/samples.js'
+import { describeItems } from '../lib/geometry.js'
 
 const REPO = 'https://github.com/mikecavallo/virtue-stage'
 
@@ -59,22 +60,49 @@ function DeclutterShowcase() {
     }
   }, [])
   if (!inv?.declutter) return null
+  const removed = describeItems(inv.objects.map((o) => o.label))
   return (
     <section className="section">
-      <div className="section-head">
-        <span className="badge">Occupied homes</span>
-        <h2>Clear the clutter, keep the house</h2>
-        <p>Every movable item removed in one pass: plants, stool, bin, mirror. Tile, cabinets, and fixtures are the original pixels. Drag to compare.</p>
-      </div>
-      <div className="declutter">
-        <CompareSlider
-          before={sampleImage(DECLUTTER_SAMPLE)}
-          after={`${sampleBase(DECLUTTER_SAMPLE)}${inv.declutter}`}
-          beforeLabel="As photographed"
-          afterLabel="Decluttered"
-          aspect={`${inv.width} / ${inv.height}`}
-          className="compare--wide"
-        />
+      <div className="declutter-grid">
+        <div className="declutter-copy">
+          <span className="badge">Occupied homes</span>
+          <h2>Clear the clutter, keep the house</h2>
+          <p>Most listings are shot with the seller still living there. One pass takes out everything movable and leaves the property exactly as it is.</p>
+          <ul className="checklist">
+            <li>
+              <CheckCircle2 size={18} />
+              <span>
+                <strong>Removed:</strong> {removed}.
+              </span>
+            </li>
+            <li>
+              <CheckCircle2 size={18} />
+              <span>
+                <strong>Untouched:</strong> tile, cabinets, fixtures, window, and light. Those are the original pixels.
+              </span>
+            </li>
+            <li>
+              <CheckCircle2 size={18} />
+              <span>
+                <strong>Shadows go too:</strong> each removal reaches past the outline, and Polish cleans anything left over.
+              </span>
+            </li>
+          </ul>
+          <a href={`#/studio/${DECLUTTER_SAMPLE}`} className="btn btn--outline">
+            Try it on this bathroom <ArrowRight size={16} />
+          </a>
+          <p className="muted small">Drag the slider to compare.</p>
+        </div>
+        <div className="declutter">
+          <CompareSlider
+            before={sampleImage(DECLUTTER_SAMPLE)}
+            after={`${sampleBase(DECLUTTER_SAMPLE)}${inv.declutter}`}
+            beforeLabel="As photographed"
+            afterLabel="Decluttered"
+            aspect={`${inv.width} / ${inv.height}`}
+            className="compare--wide"
+          />
+        </div>
       </div>
     </section>
   )

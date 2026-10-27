@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { changeLog, disclosureText, editedRegions, polishProtect, initialState, reducer, replayBaseIndex, withoutRemoved } from './history.js'
+import { changeLog, disclosureText, editedRegions, opIds, polishProtect, initialState, reducer, replayBaseIndex, withoutRemoved } from './history.js'
 
 const step = (id, op, extra = {}) => ({ id, url: `${id}.jpg`, label: id, objects: [], op, ...extra })
 
@@ -20,13 +20,30 @@ describe('history reducer', () => {
     expect(reducer(loaded, { type: 'goto', index: 5 })).toBe(loaded)
   })
 
-  it('keeps the selection only if the object still exists', () => {
+  it('keeps selected objects only while they still exist', () => {
     const obj = { id: 'sofa-1', label: 'sofa', children: [] }
     let s = reducer(loaded, { type: 'select', id: 'sofa-1' })
+    s = reducer(s, { type: 'select', id: 'rug-1', additive: true })
     s = reducer(s, { type: 'push', step: step('s1', { type: 'recolor' }, { objects: [obj] }) })
-    expect(s.selectedId).toBe('sofa-1')
+    expect(s.selectedIds).toEqual(['sofa-1'])
     s = reducer(s, { type: 'push', step: step('s2', { type: 'demo-remove' }, { objects: [] }) })
-    expect(s.selectedId).toBeNull()
+    expect(s.selectedIds).toEqual([])
+  })
+
+  it('plain taps select one object; additive taps toggle objects in and out', () => {
+    let s = reducer(loaded, { type: 'select', id: 'a' })
+    expect(s.selectedIds).toEqual(['a'])
+    s = reducer(s, { type: 'select', id: 'b', additive: true })
+    s = reducer(s, { type: 'select', id: 'c', additive: true })
+    expect(s.selectedIds).toEqual(['a', 'b', 'c'])
+    s = reducer(s, { type: 'select', id: 'b', additive: true })
+    expect(s.selectedIds).toEqual(['a', 'c'])
+    s = reducer(s, { type: 'select', id: 'c' })
+    expect(s.selectedIds).toEqual(['c'])
+    s = reducer(s, { type: 'select', id: 'c' })
+    expect(s.selectedIds).toEqual([])
+    s = reducer(reducer(s, { type: 'select', id: 'a' }), { type: 'select', id: null })
+    expect(s.selectedIds).toEqual([])
   })
 
   it('a rescan turns a replayable step into a new replay base', () => {
@@ -106,5 +123,13 @@ describe('polishProtect', () => {
       { id: 'area-rug-1', label: 'area rug', mask: rug },
     ]
     expect(polishProtect(objects, [JSON.parse(JSON.stringify(sofa))])).toEqual([art])
+  })
+})
+
+describe('batch ops', () => {
+  it('reads single and multi-object ops the same way', () => {
+    expect(opIds({ type: 'recolor', objectId: 'a' })).toEqual(['a'])
+    expect(opIds({ type: 'demo-remove', objectIds: ['a', 'b'] })).toEqual(['a', 'b'])
+    expect(opIds({ type: 'polish' })).toEqual([])
   })
 })

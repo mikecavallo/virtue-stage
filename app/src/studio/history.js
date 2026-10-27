@@ -7,7 +7,7 @@
 // recolor the sofa, then remove a pillow, and the fabric under the pillow is
 // recolored too. Generative ops (Gemini) are baked and become the new base.
 import { cloneCanvas, loadImage, recolorCanvas } from '../lib/canvas.js'
-import { withDescendants } from '../lib/geometry.js'
+import { protectedOutlines, topLevel, withDescendants } from '../lib/geometry.js'
 import { hexToRgb } from '../lib/pixels.js'
 import { editMask } from '../ai/pipeline.js'
 
@@ -17,7 +17,7 @@ export const initialState = {
   photo: null,
   steps: [],
   cursor: -1,
-  selectedId: null,
+  selectedIds: [],
   busy: null,
   error: null,
   notice: null,
@@ -40,18 +40,25 @@ export function reducer(state, action) {
           ? { ...s, objects: action.objects, scanned: true, op: REPLAYABLE.has(s.op?.type) ? { type: 'rescan', after: s.op } : s.op }
           : s,
       )
-      return { ...state, steps, selectedId: null }
+      return { ...state, steps, selectedIds: [] }
     }
     case 'push': {
       const steps = [...state.steps.slice(0, state.cursor + 1), action.step]
-      const keep = action.step.objects.some((o) => o.id === state.selectedId)
-      return { ...state, steps, cursor: steps.length - 1, busy: null, selectedId: keep ? state.selectedId : null }
+      const alive = new Set(action.step.objects.map((o) => o.id))
+      return { ...state, steps, cursor: steps.length - 1, busy: null, selectedIds: state.selectedIds.filter((id) => alive.has(id)) }
     }
     case 'goto':
       if (action.index < 0 || action.index >= state.steps.length) return state
-      return { ...state, cursor: action.index, selectedId: null }
-    case 'select':
-      return { ...state, selectedId: action.id }
+      return { ...state, cursor: action.index, selectedIds: [] }
+    case 'select': {
+      // additive (Shift/Cmd-click or multi-select mode) toggles one object in or out;
+      // a plain tap selects just that object, or clears it if it was the only one.
+      const { id, additive } = action
+      if (!id) return { ...state, selectedIds: [] }
+      const has = state.selectedIds.includes(id)
+      if (additive) return { ...state, selectedIds: has ? state.selectedIds.filter((x) => x !== id) : [...state.selectedIds, id] }
+      return { ...state, selectedIds: has && state.selectedIds.length === 1 ? [] : [id] }
+    }
     case 'error':
       return { ...state, busy: null, error: action.message }
     case 'notice':
@@ -76,26 +83,33 @@ function loadPatch(url) {
   return patchCache.get(url)
 }
 
+// Ops act on one object (objectId) or a multi-selection (objectIds).
+export const opIds = (op) => (Array.isArray(op.objectIds) ? op.objectIds : op.objectId ? [op.objectId] : [])
+
 // Render `ops` on top of `base`. `objects` is the inventory of the base image.
 export async function renderOps({ base, objects, ops, patchBaseUrl, sourceWidth, sourceHeight }) {
   let canvas = cloneCanvas(base)
   const byId = new Map(objects.map((o) => [o.id, o]))
   const removed = new Set()
   const ctx = canvas.getContext('2d')
+  const sx = canvas.width / (sourceWidth || canvas.width)
+  const sy = canvas.height / (sourceHeight || canvas.height)
   for (const op of ops) {
     if (op.type !== 'demo-remove') continue
-    for (const o of withDescendants(objects, op.objectId)) removed.add(o.id)
-    const obj = byId.get(op.objectId)
-    if (!obj?.removal) continue
-    const { patch, x, y, w, h } = obj.removal
-    const img = await loadPatch(`${patchBaseUrl}${patch}`)
-    const sx = canvas.width / (sourceWidth || canvas.width)
-    const sy = canvas.height / (sourceHeight || canvas.height)
-    ctx.drawImage(img, x * sx, y * sy, w * sx, h * sy)
+    // A parent's patch already covers everything resting on it, and a child's
+    // patch must never be drawn after its parent's, so draw top-level picks only.
+    for (const id of topLevel(objects, opIds(op))) {
+      for (const o of withDescendants(objects, id)) removed.add(o.id)
+      const obj = byId.get(id)
+      if (!obj?.removal) continue
+      const { patch, x, y, w, h } = obj.removal
+      const img = await loadPatch(`${patchBaseUrl}${patch}`)
+      ctx.drawImage(img, x * sx, y * sy, w * sx, h * sy)
+    }
   }
   // Last recolor per object wins.
   const colors = new Map()
-  for (const op of ops) if (op.type === 'recolor') colors.set(op.objectId, op.hex)
+  for (const op of ops) if (op.type === 'recolor') for (const id of opIds(op)) colors.set(id, op.hex)
   for (const [id, hex] of colors) {
     const obj = byId.get(id)
     if (!obj || removed.has(id)) continue
@@ -122,13 +136,8 @@ export function editedRegions(steps, cursor) {
   return polygons
 }
 
-// Untouched objects whose pixels Polish must not change. Floor coverings stay
-// cleanable, because removed furniture leaves its shadow on the rug.
-const FLOOR_COVERING_RE = /rug|carpet|runner|\bmat\b/
-export function polishProtect(objects, regions) {
-  const edited = new Set(regions.map((p) => JSON.stringify(p)))
-  return objects.filter((o) => !edited.has(JSON.stringify(o.mask)) && !FLOOR_COVERING_RE.test(o.label)).map((o) => o.mask)
-}
+// Untouched objects whose pixels Polish must not change.
+export const polishProtect = protectedOutlines
 
 export function withoutRemoved(objects, removedIds) {
   const gone = new Set(removedIds)

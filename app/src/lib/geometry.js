@@ -166,6 +166,38 @@ export function withDescendants(objects, id) {
   return out
 }
 
+// Drop picks that rest on other picks (pillow + the sofa it sits on -> sofa).
+export function topLevel(objects, ids) {
+  const covered = new Set()
+  for (const id of ids) for (const d of withDescendants(objects, id).slice(1)) covered.add(d.id)
+  return [...new Set(ids)].filter((id) => !covered.has(id))
+}
+
+// "a", "a and b", "a, b, and c"
+export function listJoin(items) {
+  if (items.length <= 1) return items.join('')
+  if (items.length === 2) return `${items[0]} and ${items[1]}`
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`
+}
+
+// Outlines of untouched objects that an edit's mask must not cover (wall art,
+// a chair next to the removed bed). Floor coverings stay editable, because
+// removed furniture leaves its shadow on the rug.
+const FLOOR_COVERING_RE = /rug|carpet|runner|\bmat\b/
+export function protectedOutlines(objects, editedPolygons) {
+  const edited = new Set(editedPolygons.map((p) => JSON.stringify(p)))
+  return objects.filter((o) => !edited.has(JSON.stringify(o.mask)) && !FLOOR_COVERING_RE.test(o.label)).map((o) => o.mask)
+}
+
+const plural = (w) => (/(s|x|z|ch|sh)$/.test(w) ? `${w}es` : /[^aeiou]y$/.test(w) ? `${w.slice(0, -1)}ies` : `${w}s`)
+
+// ['armchair', 'armchair', 'side table'] -> "2 armchairs and side table"
+export function describeItems(labels) {
+  const counts = new Map()
+  for (const l of labels) counts.set(l, (counts.get(l) || 0) + 1)
+  return listJoin([...counts].map(([l, n]) => (n > 1 ? `${n} ${plural(l)}` : l)))
+}
+
 export const SUPPORTED_ASPECT_RATIOS = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 
 export function nearestAspectRatio(width, height, options = SUPPORTED_ASPECT_RATIOS) {
