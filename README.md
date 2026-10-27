@@ -39,6 +39,7 @@ So the model never gets the final say over the whole frame:
 | | Demo (no key) | Live (your Gemini key) |
 |---|---|---|
 | Photos | 5 samples (one with a full declutter) | Samples or your own upload |
+| Tappable | Every visible movable piece. A few big ones (e.g. the open-plan sofa) are outline-only: recolor works, removal needs live AI | Whatever Gemini finds |
 | Object outlines | Precomputed offline with Grounding DINO + SAM | Gemini 3.8 Flash |
 | Remove | Precomputed with LaMa | Nano Banana 2.1 + mask paste-back |
 | Recolor | In-browser | In-browser |
@@ -95,6 +96,6 @@ scripts/demo-assets/  offline pipeline that builds the demo data
 
 - Gemini API (Google) for live segmentation, editing, and staging.
 - Grounding DINO, Segment Anything, and LaMa for the offline demo data. Models and licenses are listed in `scripts/demo-assets/README.md`.
-- Sample photos were carried over from the original version of this repo.
+- Kitchen photo by Terry Magallanes on Pexels (Pexels License). The other sample photos were carried over from the original version of this repo; see `scripts/demo-assets/README.md`.
 
 Built by [mikecavallo](https://github.com/mikecavallo). Not affiliated with Google.
