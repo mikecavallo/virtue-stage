@@ -5,7 +5,7 @@ photos in `app/public/samples/<id>/`:
 
 | file | what it is |
 | --- | --- |
-| `inventory.json` | tappable objects: `box_2d` `[ymin, xmin, ymax, xmax]` and `mask` (one polygon of `[x, y]`), all integers normalized to 0-1000 like Gemini returns them, plus `children` and the `removal` patch rect |
+| `inventory.json` | every visible movable object: `box_2d` `[ymin, xmin, ymax, xmax]` and `mask` (one polygon of `[x, y]`), all integers normalized to 0-1000 like Gemini returns them, plus `children` and, when it has a precomputed patch, the `removal` patch rect |
 | `remove/<object-id>.webp` | RGBA patch for removing the object **and all of its descendants**. Draw it with `ctx.drawImage(patch, x, y)` over `original.jpg`. |
 | `declutter.jpg` | optional: the photo with every movable thing removed. Only written when it looks believable. |
 
@@ -15,6 +15,10 @@ the same way, and the seams stay invisible.
 
 ## Contract for the app
 
+- **Objects without `removal` are outline-only.** They are tappable, but LaMa cannot
+  remove them believably (the leather sofa in front of a kitchen, a side table in front
+  of a chair). In demo mode their removal needs a Gemini key. Outline-only objects can
+  have removable children (sofa → throw pillows): the pillows keep their own patches.
 - **Patches compose in any order.** Draw each removed object's patch onto the
   original, in the order the user removed them.
 - **Never draw a child's patch after its parent's.** Removing a parent removes its
@@ -32,11 +36,20 @@ the same way, and the seams stay invisible.
 2. **Segmentation:** SAM ViT-H takes the box prompt, plus optional include/exclude
    clicks and extra `parts` that are merged into the mask.
    - Masks are clipped to the box, small specks are dropped and small holes filled.
-   - `attach` adds unlisted bits that are removed with an object (books under a vase,
-     a white pillow stacked behind a patterned one).
-   - `extra` marks background furniture that is not tappable.
+   - `attach` adds bits that are removed with an object (books under a vase, a white
+     pillow stacked behind a patterned one). An attach entry with an `id` is also
+     listed in the inventory as an outline-only child of its owner.
+   - `removal=False` marks an outline-only object (see the contract above).
+   - `fixtures` (a faucet, a counter edge) are never listed or removed, and they are
+     protected in every removal.
+   - `extra` marks unlisted background things. Since every movable item is now
+     listed, it is unused.
 3. **Polygons:** the largest external contour is simplified with `cv2.approxPolyDP`
    to 20-120 points.
+   - `polygon="bridge"` joins pieces split by a thin occluder (a lamp shade and base
+     split by a leaf).
+   - `polygon="hull-free"` takes the convex hull minus every other listed object, for
+     thin, heavily occluded furniture such as hairpin legs behind leaves.
 4. **Removal with shared clean plates.** This is what makes the patches compose.
    - **Clusters.** Removable units that touch each other form a cluster. "Touch"
      means one unit's mask reaches into the other's feathered removal alpha.
@@ -56,25 +69,27 @@ the same way, and the seams stay invisible.
      plus 10 px downward for contact shadows; 6 px for wall decor and soft goods),
      then feathered with a Gaussian (σ 3-5 px). It is zero on every other visible
      object except within 5 px of the removed object's own edge.
-   - **Extras** stay in all tappable plates as protected context.
+   - **Outline-only objects and fixtures** stay in every plate as protected context,
+     so adding outline-only objects never changes an existing patch.
    - **Output.** Each patch is a WebP crop (quality 88, lossless alpha).
 5. **Occlusion.** If tappable object A stands in front of tappable object B, any
    composable removal of A alone has to show what was hidden behind A. So either:
    - **A is made B's child.** Examples: the nightstand in front of the bed, the
      pepper mills in front of the pot, the bed standing on the rug. Removing A alone
      lets LaMa continue B, and removing B takes A along.
-   - **A stays as `extra` background.** Examples: the side table and vase in front of
-     the accent chair, the sideboard behind the fig, the snake plant in front of the
-     wall hanging.
+   - **A is outline-only.** Examples: the side table and vase in front of the accent
+     chair, the sideboard behind the fig, the snake plant in front of the wall
+     hanging, and the dining chairs behind the kitchen sink.
 
-   Objects LaMa cannot remove believably at all also stay as background. Examples: the
-   leather sofa in front of a busy kitchen, and four overlapping dining chairs, which
-   became one `dining-set-1`.
+   Objects LaMa cannot remove believably at all are also outline-only. Examples: the
+   leather sofa in front of a busy kitchen, and the kitchen plant at the wall corner.
+   Four overlapping dining chairs became one removable `dining-set-1`.
 
    The one remaining exception is armchair-1 in front of the living-room side table.
    Removing the armchair alone shows the table's hidden part as background, so the
    table looks cut off.
-6. **Declutter:** every object plus every extra is removed, built the same way.
+6. **Declutter:** every listed object, outline-only ones included, is removed, built
+   the same way. Fixtures stay.
 7. **Verify:**
    - Each patch is composited exactly like canvas `drawImage` (straight-alpha
      source-over at `(x, y)`) and compared with the pipeline's own result.
@@ -124,3 +139,14 @@ Contact sheets land in `$WORK/run/`:
 
 `declutter.jpg` is published only for samples whose spec sets
 `declutter=dict(publish=True)`, after reviewing the candidate.
+
+## Sample photo credits
+
+- `kitchen/original.jpg`: "Bright and spacious kitchen interior" by
+  [Terry Magallanes](https://www.pexels.com/@itsterrymag/) on Pexels,
+  <https://www.pexels.com/photo/four-brown-wooden-chairs-2635038/>, under the
+  [Pexels License](https://www.pexels.com/license/) (free to use, no attribution
+  required, but credited here). It was resized from 6016×4016 to 1200×801 and tagged
+  sRGB.
+- `living-room`, `open-plan`, `bedroom`, `bathroom`: these came with the repository.
+  Their original sources and licenses are unknown.

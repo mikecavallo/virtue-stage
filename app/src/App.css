@@ -912,6 +912,11 @@ h3 {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
+  /* busy photos list 25+ objects; keep the action card in view */
+  max-height: 9.6rem;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
 }
 .chip {
   padding: 0.3rem 0.7rem;
